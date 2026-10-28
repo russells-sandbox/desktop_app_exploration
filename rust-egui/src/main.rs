@@ -1,5 +1,6 @@
 mod db;
 mod images;
+mod search;
 mod seed;
 
 use eframe::egui;
@@ -277,9 +278,8 @@ impl eframe::App for RecipeApp {
             }
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let query = search.to_lowercase();
                 for recipe in self.recipes.iter() {
-                    if !query.is_empty() && !recipe.title.to_lowercase().contains(&query) {
+                    if !search::matches_search(&recipe.title, &search) {
                         continue;
                     }
                     let thumbnail = recipe

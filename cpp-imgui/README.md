@@ -85,6 +85,24 @@ stb_image is fetched by CMake, and the picker, threads, and
 filesystem code are all standard library. `build/` is
 git-ignored.
 
+## Tests
+
+Unit tests for recipe data and title search only (plain asserts,
+no test framework). They use a throwaway temp database, never
+`recipes.db`. Encoding, UI, network, and end-to-end tests are
+out of scope here.
+
+```sh
+# Search tests only: no SQLite/SDL/Dear ImGui needed.
+g++ -std=c++17 -I. tests/test_search.cpp -o /tmp/cpp-imgui-search-tests
+/tmp/cpp-imgui-search-tests
+
+# Both test executables, once dependencies are installed:
+cmake -S . -B build
+cmake --build build --target cpp-imgui-search-tests cpp-imgui-db-tests
+ctest --test-dir build --output-on-failure
+```
+
 ## Notes and wrinkles
 
 - Dear ImGui's default font does not render the bullet

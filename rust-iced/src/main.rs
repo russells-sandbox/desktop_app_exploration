@@ -1,5 +1,6 @@
 mod db;
 mod images;
+mod search;
 mod seed;
 
 use iced::widget::{
@@ -531,9 +532,8 @@ impl RecipeManager {
             }),
         ]
         .spacing(8.0);
-        let query = self.search.to_lowercase();
         for recipe in self.recipes.iter() {
-            if !query.is_empty() && !recipe.title.to_lowercase().contains(&query) {
+            if !search::recipe_matches_search(&recipe.title, &self.search) {
                 continue;
             }
             let thumbnail: Element<Message> =

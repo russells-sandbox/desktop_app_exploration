@@ -180,6 +180,18 @@ Then:
     ./build_linux.sh
     ./odin-raygui
 
+Unit tests (recipe data and title search only; they use
+throwaway databases under the OS temp directory, never
+`recipes.db`):
+
+    odin test src -define:ODIN_TEST_TRACK_MEMORY=false
+
+Memory tracking is off for the test run because the
+existing DB layer deliberately never frees the cstrings it
+allocates for SQLite binds/columns, so a tracked run logs
+those pre-existing leaks at length even though all tests
+pass; `odin test src` without the flag also passes.
+
 Odin installs to `/opt/odin`, with a wrapper at
 `/usr/local/bin/odin` that sets `ODIN_ROOT` (symlinking
 the binary alone is not enough: Odin looks for its

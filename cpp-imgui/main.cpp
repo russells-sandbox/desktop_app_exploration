@@ -30,6 +30,7 @@
 
 #include "db.h"
 #include "filepicker.h"
+#include "search.h"
 #include "images.h"
 #include "imgui.h"
 #include "imgui_stdlib.h"
@@ -40,13 +41,6 @@ namespace {
 
 // How long a list/detail transition takes, in seconds.
 const double kDetailAnimSeconds = 0.25;
-
-std::string to_lower(const std::string& text) {
-    std::string lowered = text;
-    std::transform(lowered.begin(), lowered.end(), lowered.begin(),
-                   [](unsigned char c) { return std::tolower(c); });
-    return lowered;
-}
 
 std::string trim(const std::string& text) {
     size_t first = 0;
@@ -279,11 +273,10 @@ int main(int, char**) {
             ImGui::EndDisabled();
         }
         ImGui::Separator();
-        std::string query = to_lower(search);
         const float now = static_cast<float>(ImGui::GetTime());
         const ImU32 spinner_color = ImGui::GetColorU32(ImGuiCol_Text);
         for (const Recipe& recipe : recipes) {
-            if (!query.empty() && to_lower(recipe.title).find(query) == std::string::npos) {
+            if (!recipe_title_matches_search(recipe.title, search)) {
                 continue;
             }
             // List thumbnail: the image at 32x32 (aspect-preserving

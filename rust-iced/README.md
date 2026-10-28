@@ -34,6 +34,19 @@ equivalent of `install_ubuntu.sh`):
 `recipes.db` is created in the current working directory on
 first run.
 
+## Tests
+
+```sh
+PATH=$HOME/.cargo/bin:$PATH cargo test -- --test-threads=1
+```
+
+Single-threaded because the DB and image tests switch the
+process working directory to a throwaway temp directory
+(the DB layer opens `recipes.db` in the current directory),
+and that directory is process-wide. Tests cover recipe data
+and title search only; they never touch the real
+`recipes.db`.
+
 ## Recipe manager
 
 Recipes load from SQLite (`recipes.db` in the current working
@@ -106,6 +119,10 @@ from the spec. No network yet.
   once in a transaction only when the recipes table is
   empty.
 - `src/seed.rs` — the seed data, identical to `rust-egui/`.
+- `src/search.rs` — the title search predicate (case-insensitive
+  substring match on the title only, empty query matches
+  everything), extracted from the list in `main.rs` so it can be
+  unit-tested; its tests live with it.
 - `src/images.rs` — image import (copy into `images/`)
   and decoding to raw RGBA pixels (via the `image` crate:
   png/jpeg/gif/webp/bmp).
@@ -151,7 +168,7 @@ from the spec. No network yet.
   lock and running its own `apt-get update` at the time).
 - Keyboard input from `xdotool` does not reach apps under
   Xvfb here (no window manager), so search typing was not
-  exercised through the UI; the filter itself is the same
-  three-line title-substring match as the other stacks.
+  exercised through the UI; the filter predicate itself is
+  unit-tested in `src/search.rs`.
   Mouse clicks and wheel scrolling do work and were used
   for all other UI verification.

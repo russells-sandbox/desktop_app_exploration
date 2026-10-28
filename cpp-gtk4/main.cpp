@@ -29,6 +29,7 @@
 
 #include "db.h"
 #include "images.h"
+#include "search.h"
 
 // How long a list/detail transition takes, in seconds.
 const double DETAIL_ANIM_SECONDS = 0.25;
@@ -63,14 +64,6 @@ struct App {
 };
 
 namespace {
-
-std::string lowercased(const std::string& text) {
-    std::string out = text;
-    for (char& c : out) {
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    return out;
-}
 
 std::string trimmed(const std::string& text) {
     size_t begin = 0;
@@ -172,10 +165,8 @@ GtkWidget* text_view_of(GtkWidget* scrolled) {
 
 void apply_filter(App* app) {
     app->filtered.clear();
-    std::string query = lowercased(app->search_text);
     for (int i = 0; i < static_cast<int>(app->recipes.size()); ++i) {
-        if (query.empty() ||
-            lowercased(app->recipes[i].title).find(query) != std::string::npos) {
+        if (title_matches_search(app->recipes[i].title, app->search_text)) {
             app->filtered.push_back(i);
         }
     }

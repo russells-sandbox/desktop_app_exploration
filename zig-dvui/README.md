@@ -45,6 +45,25 @@ equivalent of `install_ubuntu.sh`):
 
 `zig-out/`, `.zig-cache/` and `zig-pkg/` are git-ignored.
 
+## Tests
+
+Unit tests cover recipe data and search only (no encoding,
+UI, network, or end-to-end tests):
+
+```sh
+zig build test
+```
+
+Search tests also run standalone, with no dependencies:
+
+```sh
+zig test src/search.zig
+```
+
+Database tests open throwaway databases in temp directories
+(via the test-only `openForTest` in `src/db.zig`), never the
+real `recipes.db`. Zig 0.17.0 is required, as for the build.
+
 ## Features
 
 Recipes load from SQLite (`recipes.db` in the current working
@@ -109,6 +128,10 @@ instead of crashing. No network yet.
   DVUI's App-provided ones. The search text, selection,
   mode, and edit draft are the mutable frame state; the
   recipes themselves come from `db.zig`.
+- `src/search.zig` — the recipe-list search predicate
+  (case-insensitive substring match on the title only),
+  extracted from `main.zig` so it can be tested without
+  DVUI, plus its unit tests.
 - `src/db.zig` — SQLite storage via the system SQLite C API
   (declared by hand with `extern fn`, since Zig 0.17 removed
   `@cImport`; linked with `linkSystemLibrary("sqlite3")` on

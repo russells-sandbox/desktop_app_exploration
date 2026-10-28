@@ -26,4 +26,32 @@ pub fn build(b: *std.Build) void {
     // not the executable step, and this also links libc.
     exe.root_module.linkSystemLibrary("sqlite3", .{});
     b.installArtifact(exe);
+
+    // Unit tests: recipe data (db.zig) and search
+    // (search.zig) only — no encoding, UI, network, or
+    // end-to-end tests. Neither test module imports DVUI;
+    // the db tests link the system SQLite library like the
+    // app does.
+    const search_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/search.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_search_tests = b.addRunArtifact(search_tests);
+
+    const db_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/db.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    db_tests.root_module.linkSystemLibrary("sqlite3", .{});
+    const run_db_tests = b.addRunArtifact(db_tests);
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_search_tests.step);
+    test_step.dependOn(&run_db_tests.step);
 }

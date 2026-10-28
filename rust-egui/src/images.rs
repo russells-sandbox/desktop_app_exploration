@@ -52,7 +52,14 @@ mod tests {
 
     #[test]
     fn import_copies_and_renames_on_collision() {
+        // Serialise with the DB tests: both switch the process
+        // working directory, which is process-global (see db.rs).
+        // Assertions below are unchanged.
+        let _cwd_lock = crate::db::CWD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = env::temp_dir().join(format!("image-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let original = env::current_dir().unwrap();
         env::set_current_dir(&tmp).unwrap();

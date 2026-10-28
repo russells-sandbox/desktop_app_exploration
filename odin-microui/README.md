@@ -264,3 +264,20 @@ equivalent of `install_ubuntu.sh`):
 ```
 
 The built `odin-microui` binary and `recipes.db` are git-ignored.
+
+## Tests
+
+Unit tests for recipe data and title search live in
+`src/search_test.odin` and `src/db_test.odin` (`@(test)`
+procedures, run with the Odin test runner):
+
+```sh
+odin test src
+```
+
+The search tests call the app's own `matches_search`
+(`src/main.odin`) directly; the data tests use the app's DB
+layer (`src/db.odin`) against throwaway databases in `/tmp`,
+never the real `recipes.db`, and each test removes its file
+when it finishes. No test files are included in a normal
+`odin build src`.

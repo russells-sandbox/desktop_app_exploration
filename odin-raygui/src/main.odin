@@ -668,11 +668,11 @@ main :: proc() {
 		// Filtered list, case-insensitive on the title, like
 		// the Rust version. Filtering never changes the
 		// selection, so the detail keeps showing the selected
-		// recipe even when it is filtered out.
-		query := strings.to_lower(strings.trim_space(buf_str(search_buf[:])), context.temp_allocator)
+		// recipe even when it is filtered out. The predicate
+		// lives in src/search.odin so it can be unit-tested.
 		filtered := make([dynamic]int, context.temp_allocator)
 		for recipe, i in recipes {
-			if query == "" || strings.contains(strings.to_lower(recipe.title, context.temp_allocator), query) {
+			if title_matches_query(recipe.title, buf_str(search_buf[:])) {
 				append(&filtered, i)
 			}
 		}

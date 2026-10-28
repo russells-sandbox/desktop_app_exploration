@@ -7,6 +7,14 @@
 use crate::{seed, Ingredient, Recipe};
 use rusqlite::{params, Connection};
 
+// Test-only lock serialising the tests that switch the process working
+// directory (this module's DB tests and the images test): the working
+// directory is process-global, so two such tests running in parallel
+// would otherwise operate on each other's throwaway directory. It has
+// no effect on the app itself.
+#[cfg(test)]
+pub(crate) static CWD_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "PRAGMA foreign_keys = ON;
@@ -215,17 +223,108 @@ pub(crate) fn delete_recipe(id: i64) -> rusqlite::Result<()> {
 mod tests {
     use super::*;
     use std::env;
+    use std::path::PathBuf;
+
+    // Restores the working directory and removes the throwaway DB
+    // directory on drop, so a failed assertion does not strand the
+    // process in the temp directory for the remaining tests.
+    struct RestoreCwd {
+        original: PathBuf,
+        tmp: PathBuf,
+    }
+
+    impl Drop for RestoreCwd {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.original);
+            let _ = std::fs::remove_dir_all(&self.tmp);
+        }
+    }
 
     #[test]
     fn insert_update_delete_round_trip() {
+        // Hold the cwd lock for the whole test (declared first, so
+        // it is released after the RestoreCwd guard below).
+        let _cwd_lock = CWD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = env::temp_dir().join(format!("recipe-test-{}", std::process::id()));
+        // A previous crashed run may have left this directory behind
+        // with a populated recipes.db; start clean so seeding is tested.
+        let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let original = env::current_dir().unwrap();
         env::set_current_dir(&tmp).unwrap();
+        let _restore = RestoreCwd {
+            original,
+            tmp: tmp.clone(),
+        };
 
+        // Seed loads 3 recipes, in order, with ingredients and steps
+        // preserved and in order.
         let recipes = load_recipes().unwrap();
         assert_eq!(recipes.len(), 3);
+        let titles: Vec<&str> = recipes.iter().map(|r| r.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            ["Banana Bread", "Tomato Basil Pasta", "Chicken Stir Fry"]
+        );
+        assert_eq!(
+            recipes
+                .iter()
+                .map(|r| (r.servings, r.ingredients.len(), r.steps.len()))
+                .collect::<Vec<_>>(),
+            [(8, 7, 5), (4, 6, 4), (4, 6, 4)]
+        );
+        let banana = &recipes[0];
+        let banana_ingredients: Vec<&str> = banana
+            .ingredients
+            .iter()
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(
+            banana_ingredients,
+            [
+                "ripe bananas, mashed",
+                "butter, melted",
+                "sugar",
+                "egg",
+                "vanilla",
+                "baking soda",
+                "flour",
+            ]
+        );
+        assert_eq!(banana.ingredients[0].amount, "3");
+        assert_eq!(banana.ingredients[0].unit, "");
+        assert_eq!(banana.ingredients[1].amount, "1/2");
+        assert_eq!(banana.ingredients[1].unit, "cup");
+        assert_eq!(
+            banana.steps[0],
+            "Preheat the oven to 350°F and grease a 9x5 loaf pan."
+        );
+        assert_eq!(
+            banana.steps[4],
+            "Cool in the pan for 10 minutes, then turn out onto a rack."
+        );
+        assert_eq!(recipes[1].ingredients[0].name, "pasta");
+        assert_eq!(
+            recipes[1].steps[0],
+            "Cook the pasta in salted water until al dente, reserving a cup of pasta water."
+        );
+        assert_eq!(recipes[2].ingredients[0].name, "chicken breast, sliced");
+        assert_eq!(
+            recipes[2].steps[3],
+            "Cook for 2 more minutes, stirring, until the sauce coats everything."
+        );
 
+        // Seeding twice does not duplicate recipes.
+        let recipes = load_recipes().unwrap();
+        assert_eq!(recipes.len(), 3);
+        assert_eq!(
+            recipes.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            ["Banana Bread", "Tomato Basil Pasta", "Chicken Stir Fry"]
+        );
+
+        // Insert round-trip, with children preserved.
         let mut new = Recipe {
             id: 0,
             title: "Test Soup".to_string(),
@@ -244,19 +343,79 @@ mod tests {
         new.id = id;
         let recipes = load_recipes().unwrap();
         assert_eq!(recipes.len(), 4);
-        assert!(recipes.iter().any(|r| r.title == "Test Soup"));
+        let inserted = recipes.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(inserted.title, "Test Soup");
+        assert_eq!(inserted.ingredients.len(), 1);
+        assert_eq!(inserted.ingredients[0].name, "water");
+        assert_eq!(inserted.steps, vec!["Boil."]);
 
+        // Update replaces the title AND the ingredients/steps:
+        // the old children must be gone, not appended to.
         new.title = "Test Soup Edited".to_string();
+        new.description = "Edited".to_string();
+        new.servings = 3;
+        new.ingredients = vec![
+            Ingredient {
+                amount: "2".to_string(),
+                unit: "cups".to_string(),
+                name: "stock".to_string(),
+            },
+            Ingredient {
+                amount: "1".to_string(),
+                unit: "".to_string(),
+                name: "onion".to_string(),
+            },
+        ];
+        new.steps = vec!["Simmer.".to_string(), "Serve.".to_string()];
         update_recipe(&new).unwrap();
         let recipes = load_recipes().unwrap();
-        assert!(recipes.iter().any(|r| r.title == "Test Soup Edited"));
+        assert_eq!(recipes.len(), 4);
+        let updated = recipes.iter().find(|r| r.id == id).unwrap();
+        assert_eq!(updated.title, "Test Soup Edited");
+        assert_eq!(updated.description, "Edited");
+        assert_eq!(updated.servings, 3);
+        assert_eq!(
+            updated
+                .ingredients
+                .iter()
+                .map(|i| i.name.as_str())
+                .collect::<Vec<_>>(),
+            ["stock", "onion"]
+        );
+        assert_eq!(updated.steps, vec!["Simmer.", "Serve."]);
 
+        // Delete removes the recipe and its children: no orphan
+        // ingredient or step rows for the deleted id, and the seed
+        // children's totals are unchanged (7+6+6 ingredients,
+        // 5+4+4 steps).
         delete_recipe(id).unwrap();
         let recipes = load_recipes().unwrap();
         assert_eq!(recipes.len(), 3);
         assert!(!recipes.iter().any(|r| r.title == "Test Soup Edited"));
-
-        env::set_current_dir(original).unwrap();
-        let _ = std::fs::remove_dir_all(&tmp);
+        let conn = Connection::open("recipes.db").unwrap();
+        let orphan_ingredients: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM ingredients WHERE recipe_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let orphan_steps: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM steps WHERE recipe_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan_ingredients, 0);
+        assert_eq!(orphan_steps, 0);
+        let total_ingredients: i64 = conn
+            .query_row("SELECT COUNT(*) FROM ingredients", [], |row| row.get(0))
+            .unwrap();
+        let total_steps: i64 = conn
+            .query_row("SELECT COUNT(*) FROM steps", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total_ingredients, 19);
+        assert_eq!(total_steps, 13);
     }
 }

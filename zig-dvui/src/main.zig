@@ -1,6 +1,7 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const db = @import("db.zig");
+const search = @import("search.zig");
 const images = @import("images.zig");
 const imageloader = @import("imageloader.zig");
 
@@ -227,22 +228,6 @@ fn draftFromRecipe(recipe: db.Recipe) void {
     }
 }
 
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-    for (0..haystack.len - needle.len + 1) |i| {
-        var matches = true;
-        for (needle, 0..) |nc, j| {
-            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(nc)) {
-                matches = false;
-                break;
-            }
-        }
-        if (matches) return true;
-    }
-    return false;
-}
-
 /// Index of the selected recipe, or 0 when the selection is
 /// stale (the caller checks for an empty list first).
 fn selectedIndex(recipes: []db.Recipe) usize {
@@ -364,7 +349,7 @@ pub fn appFrame() !dvui.App.Result {
         defer scroll.deinit();
 
         for (recipes, 0..) |recipe, i| {
-            if (!containsIgnoreCase(recipe.title, filter)) continue;
+            if (!search.containsIgnoreCase(recipe.title, filter)) continue;
             var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
                 .id_extra = i,
                 .expand = .horizontal,

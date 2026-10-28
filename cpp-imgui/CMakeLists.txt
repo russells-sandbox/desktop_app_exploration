@@ -61,3 +61,18 @@ target_include_directories(cpp-imgui PRIVATE
 )
 
 target_link_libraries(cpp-imgui PRIVATE SDL2::SDL2 OpenGL::GL SQLite3::SQLite3 dl)
+
+# Unit tests (plain asserts, no test framework, no new dependency).
+# Search tests link nothing but the standard library, so they
+# build without SQLite/SDL/Dear ImGui. DB tests use the stack's
+# own db.cpp and need SQLite3 only.
+enable_testing()
+
+add_executable(cpp-imgui-search-tests tests/test_search.cpp)
+target_include_directories(cpp-imgui-search-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME cpp-imgui-search-tests COMMAND cpp-imgui-search-tests)
+
+add_executable(cpp-imgui-db-tests tests/test_db.cpp db.cpp)
+target_include_directories(cpp-imgui-db-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(cpp-imgui-db-tests PRIVATE SQLite3::SQLite3)
+add_test(NAME cpp-imgui-db-tests COMMAND cpp-imgui-db-tests)

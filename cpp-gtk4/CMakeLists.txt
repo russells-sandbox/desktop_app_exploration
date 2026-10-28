@@ -26,3 +26,27 @@ target_link_libraries(cpp-gtk4 PRIVATE
     ${GTK4_LIBRARIES}
     ${SQLite3_LIBRARIES}
 )
+
+# Unit tests: plain check mains, no test framework, no new
+# dependencies. test-search links nothing but the search header
+# (no GTK, no SQLite), so it also builds with plain g++:
+#   g++ -std=c++17 -Wall -Wextra test_search.cpp -o /tmp/test_search
+# test-db uses the stack's own DB layer against a throwaway
+# database under /tmp; it never opens the real recipes.db.
+add_executable(cpp-gtk4-test-search
+    test_search.cpp
+)
+
+add_executable(cpp-gtk4-test-db
+    test_db.cpp
+    db.cpp
+    seed.cpp
+)
+
+target_include_directories(cpp-gtk4-test-db PRIVATE
+    ${SQLite3_INCLUDE_DIRS}
+)
+
+target_link_libraries(cpp-gtk4-test-db PRIVATE
+    ${SQLite3_LIBRARIES}
+)

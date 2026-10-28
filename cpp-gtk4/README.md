@@ -36,6 +36,28 @@ is the Fedora equivalent of `install_dependencies_ubuntu.sh`):
 
 `build/` is git-ignored.
 
+## Tests
+
+Recipe-data and search unit tests only (no encoding, UI,
+network, or end-to-end tests). Plain check mains, no test
+framework. The DB tests use a throwaway database under `/tmp`
+and never open the real `recipes.db`.
+
+```sh
+cmake -S . -B build
+cmake --build build --target cpp-gtk4-test-search cpp-gtk4-test-db
+./build/cpp-gtk4-test-search
+./build/cpp-gtk4-test-db
+```
+
+The search test links nothing but `search.h`, so it also builds
+without GTK or SQLite installed:
+
+```sh
+g++ -std=c++17 -Wall -Wextra test_search.cpp -o /tmp/test_search
+/tmp/test_search
+```
+
 ## How it works
 
 - `db.cpp` / `db.h` — SQLite storage via the system SQLite3 C API.
