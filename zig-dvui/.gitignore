@@ -2,3 +2,4 @@
 zig-out/
 zig-pkg/
 recipes.db
+memory_profile.csv

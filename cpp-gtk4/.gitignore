@@ -1,3 +1,4 @@
 build/
 recipes.db
 images/
+memory_profile.csv
