@@ -610,7 +610,15 @@ form_block :: proc(draw: bool, ox, oy, width: f32) -> f32 {
 // ---- Main ----
 
 main :: proc() {
+	// Without WINDOW_RESIZABLE, raylib creates a fixed-size
+	// window and the window manager offers no resize handle:
+	// that was the whole bug. The flag must be set before
+	// InitWindow. The minimum size keeps the fixed-width
+	// form rows usable when the window is shrunk; enlarging
+	// is unrestricted.
+	rl.SetConfigFlags({.WINDOW_RESIZABLE})
 	rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Recipe Manager")
+	rl.SetWindowMinSize(640, 480)
 	rl.SetTargetFPS(60)
 	defer rl.CloseWindow()
 
@@ -668,7 +676,13 @@ main :: proc() {
 				append(&filtered, i)
 			}
 		}
-		list_panel := rl.Rectangle{10, 110, 280, 480}
+		// Panels follow the outer window size, keeping the
+		// original proportions at 900x600: a fixed 280px
+		// list column, a 10px gap, and the detail panel
+		// taking the rest. Everything inside the panels
+		// already derives from the panel size, so no other
+		// layout code changes.
+		list_panel := rl.Rectangle{10, 110, 280, f32(rl.GetScreenHeight() - 120)}
 		list_view: rl.Rectangle
 		list_content := rl.Rectangle{0, 0, list_panel.width - 20, f32(len(filtered) * 40)}
 		rl.GuiScrollPanel(list_panel, "", list_content, &list_scroll, &list_view)
@@ -722,7 +736,7 @@ main :: proc() {
 		y_slide := (1.0 - fade) * 12.0
 
 		// ---- Right pane: detail or edit form ----
-		detail_panel := rl.Rectangle{300, 10, 590, 580}
+		detail_panel := rl.Rectangle{300, 10, f32(rl.GetScreenWidth() - 310), f32(rl.GetScreenHeight() - 20)}
 		if load_error != "" {
 			draw_wrapped(detail_panel.x + 10, detail_panel.y + 10, detail_panel.width - 20, FONT_BODY, rl.RED, load_error)
 		} else if mode == .Editing {

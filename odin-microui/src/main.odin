@@ -302,10 +302,23 @@ main :: proc() {
 	draw_records := make([dynamic]Draw_Record, 0, 16)
 	defer delete(draw_records)
 
+	// Without WINDOW_RESIZABLE, raylib creates a fixed-size
+	// window and the window manager offers no resize handle:
+	// that was the whole bug. The flag must be set before
+	// InitWindow. The minimum size keeps the fixed-width form
+	// rows (import, ingredients, steps) usable when the
+	// window is shrunk; enlarging is unrestricted.
+	rl.SetConfigFlags({.WINDOW_RESIZABLE})
 	rl.InitWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Recipe Manager")
+	rl.SetWindowMinSize(640, 480)
 	rl.SetTargetFPS(60)
 	defer rl.CloseWindow()
 	defer cleanup_images(&image_cache)
+
+	// Last seen window size, for snapping the panes to the
+	// new layout when the outer window is resized (below).
+	prev_win_w: i32 = WINDOW_WIDTH
+	prev_win_h: i32 = WINDOW_HEIGHT
 
 	for !rl.WindowShouldClose() {
 		// Feed raylib's input into microUI.
@@ -401,12 +414,30 @@ main :: proc() {
 		query := string(search_buf[:search_len])
 		sel_idx := selected_index(recipes[:], selected_id)
 
+		// Pane layout follows the outer window size, keeping
+		// the original proportions at 900x600: a fixed 280px
+		// list column, a 10px gap, and the detail pane taking
+		// the rest. The form rows and wrap width below are
+		// derived from the detail width the same way, so at
+		// 900x600 they are exactly the old fixed values
+		// (550 wrap, 440 import/step text, 250 ingredient
+		// name). Widths are clamped so a small window cannot
+		// produce a negative column width.
+		win_w := rl.GetScreenWidth()
+		win_h := rl.GetScreenHeight()
+		list_rect := mu.Rect{10, 10, 280, win_h - 20}
+		detail_rect := mu.Rect{300, 10, win_w - 310, win_h - 20}
+		detail_wrap := max(detail_rect.w - 40, 100)
+		import_text_w := max(detail_rect.w - 150, 40)
+		ing_name_w := max(detail_rect.w - 340, 40)
+		step_text_w := max(detail_rect.w - 150, 40)
+
 		mu.begin(ctx)
 
 		// Left pane: recipe list with title search. Close is
 		// disabled so a pane cannot be lost by clicking its X;
 		// the panes can still be dragged and resized.
-		if mu.begin_window(ctx, "Recipes", mu.Rect{10, 10, 280, 580}, {.NO_CLOSE}) {
+		if mu.begin_window(ctx, "Recipes", list_rect, {.NO_CLOSE}) {
 			mu.layout_row(ctx, {-1}, 0)
 			mu.label(ctx, "Recipes")
 			mu.label(ctx, "Search recipes:")
@@ -461,11 +492,11 @@ main :: proc() {
 		// Right pane: detail for the selected recipe, or the edit
 		// form. The selection survives filtering, like the Rust
 		// version: filtering the list does not change the detail.
-		if mu.begin_window(ctx, "Detail", mu.Rect{300, 10, 590, 580}, {.NO_CLOSE}) {
+		if mu.begin_window(ctx, "Detail", detail_rect, {.NO_CLOSE}) {
 			mu.layout_row(ctx, {-1}, 0)
 			if db_error != "" {
 				mu.label(ctx, "Database error:")
-				draw_wrapped(ctx, db_error, 550)
+				draw_wrapped(ctx, db_error, detail_wrap)
 			} else if editing {
 				mu.label(ctx, draft_is_new ? "Add recipe" : "Edit recipe")
 				if form_error != "" {
@@ -486,7 +517,7 @@ main :: proc() {
 				// off-screen past the clip. -1 only works as
 				// the LAST column (as in the list's {32, -1}).
 				mu.label(ctx, "Import image from file (copied into images/):")
-				mu.layout_row(ctx, {440, 100}, 0)
+				mu.layout_row(ctx, {import_text_w, 100}, 0)
 				mu.textbox(ctx, draft.import_buf[:], &draft.import_len)
 				if res := mu.button(ctx, "Import", .NONE, {}); .SUBMIT in res {
 					source := strings.trim_space(buf_str(draft.import_buf[:], draft.import_len))
@@ -505,7 +536,7 @@ main :: proc() {
 					// microUI id, so each row pushes its index
 					// onto the id stack to keep them distinct.
 					mu.push_id(ctx, uintptr(i))
-					mu.layout_row(ctx, {80, 80, 250, 80}, 0)
+					mu.layout_row(ctx, {80, 80, ing_name_w, 80}, 0)
 					mu.textbox(ctx, row.amount_buf[:], &row.amount_len)
 					mu.textbox(ctx, row.unit_buf[:], &row.unit_len)
 					mu.textbox(ctx, row.name_buf[:], &row.name_len)
@@ -531,7 +562,7 @@ main :: proc() {
 				remove_step := -1
 				for &row, i in draft.steps {
 					mu.push_id(ctx, uintptr(i))
-					mu.layout_row(ctx, {440, 80}, 0)
+					mu.layout_row(ctx, {step_text_w, 80}, 0)
 					mu.textbox(ctx, row.buf[:], &row.len)
 					if res := mu.button(ctx, "Remove", .NONE, {}); .SUBMIT in res {
 						remove_step = i
@@ -586,7 +617,7 @@ main :: proc() {
 			} else if sel_idx >= 0 {
 				recipe := recipes[sel_idx]
 				mu.label(ctx, recipe.title)
-				draw_wrapped(ctx, recipe.description, 550)
+				draw_wrapped(ctx, recipe.description, detail_wrap)
 				mu.label(ctx, fmt.tprintf("Servings: %d", recipe.servings))
 				if recipe.image_path == "" {
 					mu.label(ctx, "[No image yet]")
@@ -670,10 +701,10 @@ main :: proc() {
 					// Wrapped, not a single label: labels never
 					// wrap, so long steps were clipped at the
 					// pane edge.
-					draw_wrapped(ctx, fmt.tprintf("%d. %s", i + 1, step), 550)
+					draw_wrapped(ctx, fmt.tprintf("%d. %s", i + 1, step), detail_wrap)
 				}
 				mu.label(ctx, "Notes")
-				draw_wrapped(ctx, recipe.notes, 550)
+				draw_wrapped(ctx, recipe.notes, detail_wrap)
 			} else {
 				mu.label(ctx, "No recipe selected.")
 			}
@@ -681,6 +712,29 @@ main :: proc() {
 		}
 
 		mu.end(ctx)
+
+		// Outer-window resize: a rect passed to begin_window
+		// does not move a pane that already exists (that is
+		// what lets the user drag a pane and have it stay),
+		// so a resized outer window would otherwise leave
+		// the panes at their old size and position. When the
+		// window size changes, snap both panes to the new
+		// layout for the next frame. This deliberately
+		// discards a user-dragged position on resize only;
+		// the panes can be dragged again afterwards. The
+		// slide below runs after this, so a mid-transition
+		// resize still slides from the new base y.
+		if win_w != prev_win_w || win_h != prev_win_h {
+			if cnt := mu.get_container(ctx, "Recipes"); cnt != nil {
+				cnt.rect = list_rect
+			}
+			if cnt := mu.get_container(ctx, "Detail"); cnt != nil {
+				cnt.rect = detail_rect
+				anim_base_y = 10
+			}
+			prev_win_w = win_w
+			prev_win_h = win_h
+		}
 
 		// List/detail slide, for the next frame's layout (see
 		// the transition comment above). The pane's y at the

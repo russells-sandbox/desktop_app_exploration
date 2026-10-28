@@ -15,8 +15,11 @@ no drawing itself: it measures text and emits draw commands, and
 `src/main.odin` renders those commands with raylib
 (`vendor:raylib`, whose prebuilt Linux library ships with Odin
 too, and whose default font is used, so no font file is needed).
-The raylib window is 900x600, titled "Recipe Manager", matching
-the Rust version's window size.
+The raylib window starts at 900x600, titled "Recipe Manager",
+matching the Rust version's window size, and is resizable
+(minimum 640x480); the panes follow the window size, snapping
+back to the default layout when the outer window is resized
+(they can still be dragged and resized individually afterwards).
 
 ## UI
 

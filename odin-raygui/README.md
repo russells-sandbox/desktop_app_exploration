@@ -10,9 +10,11 @@ images load asynchronously with a loading state.
 
 raylib and raygui ship with Odin itself as `vendor:raylib`
 (both live in that one package, so every control here is
-`rl.Gui*`). The raylib window is 900x600, titled "Recipe
-Manager", matching the Rust version's window size. No font
-file is needed: raylib's default font is used throughout.
+`rl.Gui*`). The raylib window starts at 900x600, titled
+"Recipe Manager", matching the Rust version's window size,
+and is resizable (minimum 640x480); the list and detail
+panels follow the window size. No font file is needed:
+raylib's default font is used throughout.
 
 ## UI
 
