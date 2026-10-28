@@ -589,10 +589,12 @@ const test_seed: [3]Recipe = .{
 /// Path to a throwaway "test.db" inside a temp dir. The
 /// caller owns the returned sentinel string (testing
 /// allocator); the temp dir's cleanup removes the file.
-fn tempDbPath(dir: std.fs.Dir, alloc: std.mem.Allocator) ![:0]u8 {
-    const dir_path = try dir.realpathAlloc(alloc, ".");
-    defer alloc.free(dir_path);
-    return std.fmt.allocPrintZ(alloc, "{s}/test.db", .{dir_path});
+fn tempDbPath(dir: std.Io.Dir, allocator: std.mem.Allocator) ![:0]u8 {
+    // Zig 0.17: Dir is std.Io.Dir, and its path comes from
+    // realPath with the test Io instance, not realpathAlloc.
+    var buffer: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try dir.realPath(std.testing.io, &buffer);
+    return std.fmt.allocPrintSentinel(allocator, "{s}/test.db", .{buffer[0..n]}, 0);
 }
 
 /// Assert a loaded recipe equals the expected one exactly,
@@ -634,7 +636,7 @@ fn countChildRows(path: [*:0]const u8, table: [*:0]const u8, recipe_id: i64) !i6
     const conn_db = conn.?;
     defer _ = sqlite3_close(conn_db);
     var sql_buf: [128]u8 = undefined;
-    const sql = try std.fmt.bufPrintZ(&sql_buf, "SELECT COUNT(*) FROM {s} WHERE recipe_id = ?1", .{std.mem.span(table)});
+    const sql = try std.fmt.bufPrintSentinel(&sql_buf, "SELECT COUNT(*) FROM {s} WHERE recipe_id = ?1", .{std.mem.span(table)}, 0);
     var stmt: ?*sqlite3_stmt = null;
     if (sqlite3_prepare_v2(conn_db, sql.ptr, -1, &stmt, null) != SQLITE_OK or stmt == null) return error.Sqlite;
     defer _ = sqlite3_finalize(stmt.?);

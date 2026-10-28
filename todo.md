@@ -40,6 +40,9 @@ has been tested on Fedora yet.
 - [ ] memory profiling
 - [ ] compile time profiling
 - [ ] unit tests for recipe data, search, and encoding logic
+  - [X] unit tests for recipe data
+  - [X] unit tests for search
+  - [ ] unit tests for encoding logic
 - [ ] UI tests for recipe list/detail, add, edit, and delete
   - [ ] UI test input in Arabic, Devanagari, Simplified Chinese, and emoji
 - [ ] Windows build
@@ -75,6 +78,9 @@ has been tested on Fedora yet.
 - [ ] memory profiling
 - [ ] compile time profiling
 - [ ] unit tests for recipe data, search, and encoding logic
+  - [X] unit tests for recipe data
+  - [X] unit tests for search
+  - [ ] unit tests for encoding logic
 - [ ] UI tests for recipe list/detail, add, edit, and delete
   - [ ] UI test input in Arabic, Devanagari, Simplified Chinese, and emoji
 - [ ] Windows build
@@ -110,6 +116,9 @@ has been tested on Fedora yet.
 - [ ] memory profiling
 - [ ] compile time profiling
 - [ ] unit tests for recipe data, search, and encoding logic
+  - [X] unit tests for recipe data
+  - [X] unit tests for search
+  - [ ] unit tests for encoding logic
 - [ ] UI tests for recipe list/detail, add, edit, and delete
   - [ ] UI test input in Arabic, Devanagari, Simplified Chinese, and emoji
 - [ ] Windows build
@@ -145,6 +154,9 @@ has been tested on Fedora yet.
 - [ ] memory profiling
 - [ ] compile time profiling
 - [ ] unit tests for recipe data, search, and encoding logic
+  - [X] unit tests for recipe data
+  - [X] unit tests for search
+  - [ ] unit tests for encoding logic
 - [ ] UI tests for recipe list/detail, add, edit, and delete
   - [ ] UI test input in Arabic, Devanagari, Simplified Chinese, and emoji
 - [ ] Windows build
@@ -180,6 +192,9 @@ has been tested on Fedora yet.
 - [ ] memory profiling
 - [ ] compile time profiling
 - [ ] unit tests for recipe data, search, and encoding logic
+  - [X] unit tests for recipe data
+  - [X] unit tests for search
+  - [ ] unit tests for encoding logic
 - [ ] UI tests for recipe list/detail, add, edit, and delete
   - [ ] UI test input in Arabic, Devanagari, Simplified Chinese, and emoji
 - [ ] Windows build
@@ -215,6 +230,9 @@ has been tested on Fedora yet.
 - [ ] memory profiling
 - [ ] compile time profiling
 - [ ] unit tests for recipe data, search, and encoding logic
+  - [X] unit tests for recipe data
+  - [X] unit tests for search
+  - [ ] unit tests for encoding logic
 - [ ] UI tests for recipe list/detail, add, edit, and delete
   - [ ] UI test input in Arabic, Devanagari, Simplified Chinese, and emoji
 - [ ] Windows build
@@ -250,6 +268,9 @@ has been tested on Fedora yet.
 - [ ] memory profiling
 - [ ] compile time profiling
 - [ ] unit tests for recipe data, search, and encoding logic
+  - [X] unit tests for recipe data
+  - [X] unit tests for search
+  - [ ] unit tests for encoding logic
 - [ ] UI tests for recipe list/detail, add, edit, and delete
   - [ ] UI test input in Arabic, Devanagari, Simplified Chinese, and emoji
 - [ ] Windows build
