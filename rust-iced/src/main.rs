@@ -1,5 +1,6 @@
 mod db;
 mod images;
+mod json_import;
 mod search;
 mod seed;
 
@@ -130,6 +131,8 @@ enum Message {
     DraftIngredientUnitChanged(usize, String),
     DraftIngredientNameChanged(usize, String),
     DraftStepChanged(usize, String),
+    ImportUrlChanged(String),
+    ImportClicked,
     AddIngredientClicked,
     RemoveIngredientClicked(usize),
     AddStepClicked,
@@ -175,6 +178,16 @@ struct RecipeManager {
     detail_anim_for: Option<i64>,
     // Increments on every tick; picks the current spinner frame.
     spinner_frame: usize,
+    // URL import, same shape as rust-egui's: the URL text field,
+    // a finished-or-failed result waiting on a worker thread, and
+    // the last success or error message shown under the button.
+    // Fetching and parsing run on the worker thread, so a slow
+    // server never blocks the UI; the inserts happen on the UI
+    // thread when the result is collected (see poll_imports).
+    import_url: String,
+    pending_import: Option<Receiver<Result<Vec<Recipe>, String>>>,
+    import_message: Option<String>,
+    import_error: Option<String>,
 }
 
 impl RecipeManager {
@@ -199,6 +212,10 @@ impl RecipeManager {
             detail_anim_start: None,
             detail_anim_for: None,
             spinner_frame: 0,
+            import_url: "http://localhost:8000/recipes.json".to_string(),
+            pending_import: None,
+            import_message: None,
+            import_error: None,
         };
         // The first recipe shown at startup animates in, like a
         // selection change does.
@@ -281,6 +298,64 @@ impl RecipeManager {
                 Err(_) => {
                     self.image_failures.insert(path);
                 }
+            }
+        }
+    }
+
+    // Collect a finished URL import, if any, without blocking:
+    // try_recv only. The worker thread already fetched and parsed,
+    // so this step is just the database inserts, using the same
+    // db::insert_recipe the Add form uses. A failed insert stops
+    // the import, leaving any recipes already inserted in place.
+    // The first imported recipe becomes the selected recipe, so
+    // the import is visible in the detail pane right away.
+    fn poll_imports(&mut self) {
+        let Some(receiver) = &self.pending_import else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("Import failed.".to_string())
+            }
+        };
+        self.pending_import = None;
+        match result {
+            Ok(recipes) => {
+                let total = recipes.len();
+                let mut first_imported_id: Option<i64> = None;
+                for mut recipe in recipes {
+                    match db::insert_recipe(&recipe) {
+                        Ok(id) => {
+                            recipe.id = id;
+                            if first_imported_id.is_none() {
+                                first_imported_id = Some(id);
+                            }
+                            self.recipes.push(recipe);
+                        }
+                        Err(err) => {
+                            self.import_error = Some(err.to_string());
+                            self.import_message = None;
+                            return;
+                        }
+                    }
+                }
+                if let Some(id) = first_imported_id {
+                    self.selected_id = Some(id);
+                    self.detail_anim_for = Some(id);
+                    self.detail_anim_start = Some(Instant::now());
+                }
+                self.import_message = Some(if total == 1 {
+                    "Imported 1 recipe.".to_string()
+                } else {
+                    format!("Imported {} recipes.", total)
+                });
+                self.import_error = None;
+            }
+            Err(err) => {
+                self.import_error = Some(err);
+                self.import_message = None;
             }
         }
     }
@@ -491,9 +566,30 @@ impl RecipeManager {
                     }
                 }
             }
+            Message::ImportUrlChanged(url) => {
+                self.import_url = url;
+            }
+            Message::ImportClicked => {
+                // Don't let an import discard an in-progress edit,
+                // and don't start a second import while one is in
+                // flight. The fetch runs on a worker thread, the
+                // same pattern as image decoding, and Tick collects
+                // the result (see poll_imports).
+                if !self.editing() && self.pending_import.is_none() {
+                    let (sender, receiver) = channel();
+                    let url = self.import_url.clone();
+                    std::thread::spawn(move || {
+                        let _ = sender.send(json_import::fetch_and_parse(&url));
+                    });
+                    self.pending_import = Some(receiver);
+                    self.import_message = None;
+                    self.import_error = None;
+                }
+            }
             Message::Tick => {
                 self.spinner_frame = self.spinner_frame.wrapping_add(1);
                 self.poll_image_loads();
+                self.poll_imports();
             }
         }
         // Cheap, and catches any image path a save or an import just
@@ -508,7 +604,7 @@ impl RecipeManager {
             .detail_anim_start
             .map(|start| start.elapsed().as_secs_f32() < DETAIL_ANIM_SECONDS)
             .unwrap_or(false);
-        if animating || !self.pending_images.is_empty() {
+        if animating || !self.pending_images.is_empty() || self.pending_import.is_some() {
             iced::time::every(Duration::from_millis(16)).map(|_| Message::Tick)
         } else {
             Subscription::none()
@@ -532,6 +628,43 @@ impl RecipeManager {
             }),
         ]
         .spacing(8.0);
+        // URL import, below the Add button and above the list:
+        // a URL field (defaulting to the local test-data server),
+        // an Import button, a loading indicator while in flight,
+        // and the last success or error message.
+        list = list.push(text("Import from URL:").size(14.0));
+        list = list.push(
+            text_input("http://localhost:8000/recipes.json", &self.import_url)
+                .on_input(Message::ImportUrlChanged)
+                .padding(8.0),
+        );
+        if self.pending_import.is_some() {
+            list = list.push(
+                row![
+                    text(self.spinner_char()).size(20.0),
+                    text("Importing…"),
+                ]
+                .spacing(8.0)
+                .align_y(Alignment::Center),
+            );
+        } else {
+            list = list.push(button("Import").on_press_maybe(if editing {
+                None
+            } else {
+                Some(Message::ImportClicked)
+            }));
+        }
+        if let Some(message) = &self.import_message {
+            list = list.push(text(message.as_str()));
+        }
+        if let Some(error) = &self.import_error {
+            list = list.push(text(error.as_str()).color(Color {
+                r: 0.8,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            }));
+        }
         for recipe in self.recipes.iter() {
             if !search::recipe_matches_search(&recipe.title, &self.search) {
                 continue;
@@ -852,4 +985,130 @@ fn main() -> iced::Result {
     .theme(iced::Theme::Light)
     .subscription(RecipeManager::subscription)
     .run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, MutexGuard};
+
+    // Same pattern as db's tests: poll_imports inserts through
+    // db::insert_recipe, which opens recipes.db in the current
+    // directory, so these tests run in a throwaway directory.
+    // The lock serializes them; the README runs cargo test
+    // single-threaded for the same reason.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct TempDirGuard {
+        original: PathBuf,
+        dir: PathBuf,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl TempDirGuard {
+        fn new(name: &str) -> Self {
+            let lock = TEST_LOCK.lock().unwrap();
+            let dir = env::temp_dir()
+                .join(format!("recipe-import-test-{}-{}", std::process::id(), name));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let original = env::current_dir().unwrap();
+            env::set_current_dir(&dir).unwrap();
+            TempDirGuard {
+                original,
+                dir,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.original);
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    // An app with no recipes and a finished import result already
+    // waiting on its channel, as if the worker thread just sent it.
+    fn app_with_finished_import(
+        result: Result<Vec<Recipe>, String>,
+    ) -> RecipeManager {
+        let (sender, receiver) = channel();
+        let _ = sender.send(result);
+        RecipeManager {
+            recipes: Vec::new(),
+            selected_id: None,
+            search: String::new(),
+            load_error: None,
+            mode: Mode::Viewing,
+            form_error: None,
+            detail_error: None,
+            confirming_delete: false,
+            image_handles: HashMap::new(),
+            image_failures: HashSet::new(),
+            pending_images: HashMap::new(),
+            detail_anim_start: None,
+            detail_anim_for: None,
+            spinner_frame: 0,
+            import_url: "http://localhost:8000/recipes.json".to_string(),
+            pending_import: Some(receiver),
+            import_message: None,
+            import_error: None,
+        }
+    }
+
+    #[test]
+    fn poll_imports_inserts_and_reports() {
+        let _guard = TempDirGuard::new("inserts");
+        let imported = json_import::parse_recipes(
+            r#"{"title": "Toast", "servings": 1, "steps": ["Toast it."]}"#,
+        )
+        .unwrap();
+        let mut app = app_with_finished_import(Ok(imported));
+        app.poll_imports();
+        assert!(app.pending_import.is_none());
+        assert_eq!(app.recipes.len(), 1);
+        assert_eq!(app.recipes[0].title, "Toast");
+        assert_eq!(app.selected_id, Some(app.recipes[0].id));
+        assert_eq!(
+            app.import_message.as_deref(),
+            Some("Imported 1 recipe.")
+        );
+        assert!(app.import_error.is_none());
+        // The insert really reached SQLite, not just the list.
+        assert_eq!(db::load_recipes().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn poll_imports_error_reports_without_inserting() {
+        let _guard = TempDirGuard::new("error");
+        let mut app =
+            app_with_finished_import(Err("Server returned HTTP 404.".to_string()));
+        app.poll_imports();
+        assert!(app.pending_import.is_none());
+        assert!(app.recipes.is_empty());
+        assert!(app.import_message.is_none());
+        assert_eq!(
+            app.import_error.as_deref(),
+            Some("Server returned HTTP 404.")
+        );
+    }
+
+    #[test]
+    fn poll_imports_empty_collection_reports_zero() {
+        let _guard = TempDirGuard::new("empty");
+        let imported = json_import::parse_recipes(r#"{"recipes": []}"#).unwrap();
+        let mut app = app_with_finished_import(Ok(imported));
+        app.poll_imports();
+        assert!(app.recipes.is_empty());
+        assert!(app.selected_id.is_none());
+        assert_eq!(
+            app.import_message.as_deref(),
+            Some("Imported 0 recipes.")
+        );
+        assert!(app.import_error.is_none());
+    }
 }

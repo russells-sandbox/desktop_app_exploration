@@ -10,8 +10,11 @@
 // confirmation, images (list thumbnails, detail photo, import via
 // a file picker that copies into images/), a list/detail
 // transition (detail fades and slides in over ~0.25s when the
-// selection changes), and asynchronous image loading (decoding on
-// a worker thread, spinner while loading, error state on failure).
+// selection changes), asynchronous image loading (decoding on a
+// worker thread, spinner while loading, error state on failure),
+// and network JSON import from a URL (fetch and parse on a
+// worker thread, spinner while in flight, success/error message
+// in the list pane).
 //
 // Notes on the Dear ImGui default font: it does not render the
 // bullet character, so ingredients use BulletText (which draws a
@@ -22,7 +25,10 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <SDL.h>
@@ -30,6 +36,7 @@
 
 #include "db.h"
 #include "filepicker.h"
+#include "json_import.h"
 #include "search.h"
 #include "images.h"
 #include "imgui.h"
@@ -142,6 +149,22 @@ int find_recipe_index(const std::vector<Recipe>& recipes, long long id) {
     return -1;
 }
 
+// A URL import in flight. The fetch and parse run on a worker
+// thread (like image decoding), which fills this in and sets
+// done under the mutex; the main thread collects it each frame
+// below, without blocking, and does the database inserts
+// itself. The job is shared with the worker thread, so a
+// detached thread can outlive the frame that started it without
+// touching freed memory; only the result and flags live in the
+// job, never a pointer back to the app state.
+struct ImportJob {
+    std::mutex mutex;
+    bool done = false;
+    bool ok = false;
+    std::vector<Recipe> recipes;
+    std::string error;
+};
+
 }  // namespace
 
 int main(int, char**) {
@@ -208,6 +231,14 @@ int main(int, char**) {
     bool confirming_delete = false;
     FilePicker picker;
     ImageLoader loader;
+    // URL import state. The URL field defaults to the local
+    // test-data server, as in rust-egui. import_job is non-null
+    // while a fetch is in flight; import_message/import_error
+    // hold the last finished import's status.
+    std::string import_url = "http://localhost:8000/recipes.json";
+    std::string import_message;
+    std::string import_error;
+    std::shared_ptr<ImportJob> import_job;
     // Set when "Choose image..." is clicked in the form. The picker
     // popup must be opened from the main window (see below), not
     // from inside the detail child where the button lives.
@@ -246,6 +277,67 @@ int main(int, char**) {
             }
         }
 
+        // Collect a finished URL import, if any, without
+        // blocking: the worker thread already fetched and
+        // parsed, so this step is just the database inserts,
+        // using the same insert_recipe the Add form uses. A
+        // failed insert stops the import, leaving any recipes
+        // already inserted in place (as in rust-egui), and the
+        // selection only moves when every insert succeeded.
+        // Runs before drawing, so reload_recipes cannot dangle
+        // the recipe reference the detail pane uses below.
+        if (import_job != nullptr) {
+            bool done = false;
+            bool ok = false;
+            std::vector<Recipe> imported;
+            std::string import_job_error;
+            {
+                std::lock_guard<std::mutex> lock(import_job->mutex);
+                done = import_job->done;
+                ok = import_job->ok;
+                imported = import_job->recipes;
+                import_job_error = import_job->error;
+            }
+            if (done) {
+                import_job = nullptr;
+                if (!ok) {
+                    import_error = import_job_error;
+                    import_message.clear();
+                } else if (db == nullptr) {
+                    import_error = "No database open.";
+                    import_message.clear();
+                } else {
+                    long long first_imported_id = 0;
+                    bool insert_ok = true;
+                    for (const Recipe& recipe : imported) {
+                        long long new_id = 0;
+                        std::string error;
+                        if (!insert_recipe(db, recipe, new_id, error)) {
+                            import_error = error;
+                            import_message.clear();
+                            insert_ok = false;
+                            break;
+                        }
+                        if (first_imported_id == 0) {
+                            first_imported_id = new_id;
+                        }
+                    }
+                    reload_recipes();
+                    if (insert_ok) {
+                        if (first_imported_id != 0) {
+                            selected_id = first_imported_id;
+                        }
+                        import_message =
+                            imported.size() == 1
+                                ? "Imported 1 recipe."
+                                : "Imported " + std::to_string(imported.size()) +
+                                      " recipes.";
+                        import_error.clear();
+                    }
+                }
+            }
+        }
+
         ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize, ImGuiCond_Always);
         ImGui::Begin("Recipe Manager", nullptr,
@@ -275,6 +367,60 @@ int main(int, char**) {
         ImGui::Separator();
         const float now = static_cast<float>(ImGui::GetTime());
         const ImU32 spinner_color = ImGui::GetColorU32(ImGuiCol_Text);
+        ImGui::Text("Import from URL:");
+        ImGui::InputTextWithHint("##importurl", "http://localhost:8000/recipes.json",
+                                 &import_url);
+        if (import_job != nullptr) {
+            // Spinner + text, like rust-egui's Spinner with
+            // "Importing..." beside it. The button is replaced
+            // while a fetch is in flight, so a second import
+            // cannot start on top of the first.
+            ImVec2 cursor = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(20.0f, 20.0f));
+            draw_spinner(ImGui::GetWindowDrawList(), cursor.x + 10.0f,
+                         cursor.y + 10.0f, 8.0f, now, spinner_color);
+            ImGui::SameLine();
+            ImGui::Text("Importing...");
+        } else {
+            // Disabled while editing, as in rust-egui: starting
+            // an import must not race an in-progress edit.
+            bool import_disabled = editing;
+            if (import_disabled) {
+                ImGui::BeginDisabled();
+            }
+            if (ImGui::Button("Import")) {
+                // Fetch and parse on a worker thread; the poll
+                // above collects the result. A previous message
+                // or error is cleared so the spinner is the only
+                // status shown while the fetch is in flight.
+                import_message.clear();
+                import_error.clear();
+                auto job = std::make_shared<ImportJob>();
+                import_job = job;
+                std::string url = import_url;
+                std::thread([job, url]() {
+                    std::vector<Recipe> recipes;
+                    std::string error;
+                    bool ok = fetch_and_parse(url, recipes, error);
+                    std::lock_guard<std::mutex> lock(job->mutex);
+                    job->done = true;
+                    job->ok = ok;
+                    job->recipes = std::move(recipes);
+                    job->error = std::move(error);
+                }).detach();
+            }
+            if (import_disabled) {
+                ImGui::EndDisabled();
+            }
+        }
+        if (!import_message.empty()) {
+            ImGui::Text("%s", import_message.c_str());
+        }
+        if (!import_error.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
+                               import_error.c_str());
+        }
+        ImGui::Separator();
         for (const Recipe& recipe : recipes) {
             if (!recipe_title_matches_search(recipe.title, search)) {
                 continue;

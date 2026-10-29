@@ -56,7 +56,10 @@ Pasta, and Chicken Stir Fry (19 ingredients, 13 steps total).
 A second run loads from the database and does not re-seed.
 A load failure is shown in the detail pane instead of
 crashing. No prep/cook fields anywhere: they were removed
-from the spec. No network yet.
+from the spec. Network JSON import from a URL is implemented
+(`src/json_import.rs`): a URL field and Import button in the
+left pane, fetched on a worker thread, with loading and error
+states, inserting through the same SQLite layer.
 
 - Left pane: "Recipes", a title search box, an "Add recipe"
   button, and one row per matching recipe (32x32 thumbnail

@@ -90,6 +90,42 @@ is moved. This mirrors the Rust version's
 dialog instead). A path typed into the form and saved
 without importing is stored as typed.
 
+## Network JSON import
+
+The left pane has an "Import from URL" field (defaulting
+to `http://localhost:8000/recipes.json`, the local
+test-data server) and an Import button. While a fetch is
+in flight the button is replaced by a spinner and
+"Importing..."; afterwards the pane shows "Imported N
+recipe(s)." or a red error line. Imported recipes are
+inserted through the existing `insert_recipe` in
+`src/db.odin`, and the first imported recipe is selected.
+
+Implementation (`src/json_import.odin`) mirrors
+`rust-egui/src/json_import.rs`: the same three accepted
+document shapes (a single recipe object, a bare array,
+or an object with a `recipes` array), the same fields,
+and the same defaults (missing description, notes,
+ingredients or steps read as empty, `image_path` as null,
+servings as 0; a missing or blank title is an error, and
+a null optional field reads as missing). Fetching uses
+only Odin's standard library — `core:net` TCP for
+`http://` (no TLS, so `https://` is rejected with a clear
+message, like the Rust version) and `core:encoding/json`
+for parsing — with the Rust version's chunked-body
+decoder and redirect handling (up to 3 redirects).
+Fetching and parsing run on a worker thread and report
+back through a mutex-guarded result that the main thread
+polls once per frame (`import_poll`, next to
+`image_poll`), following the image-loading thread pattern
+in `src/images.odin`, so importing never blocks the UI.
+Unlike the Rust version there are no connect/read
+timeouts: `core:net` offers none for a blocking socket,
+so a hung server would stall the worker thread (not the
+UI) until the connection closes. The shared fixtures in
+`test-data/` cover all three shapes plus the empty
+collection and the invalid-JSON error case.
+
 ## SQLite — the wrinkle
 
 Odin ships no SQLite package. `vendor/` has no sqlite
@@ -180,7 +216,8 @@ Then:
     ./build_linux.sh
     ./odin-raygui
 
-Unit tests (recipe data and title search only; they use
+Unit tests (recipe data, title search, and JSON import —
+including fetching from a local one-shot server; they use
 throwaway databases under the OS temp directory, never
 `recipes.db`):
 
@@ -200,16 +237,18 @@ uses clang to link on Linux.
 
 ## Current state
 
-Up to and including `display animations: image loading
-state` in `todo.md`: install scripts (Ubuntu, Fedora),
+Up to and including network JSON import from a URL in
+`todo.md` (past `display animations: image loading
+state`): install scripts (Ubuntu, Fedora),
 hello world (the window itself), recipe view with
 hard-coded data (superseded by SQLite), recipe view with
 SQLite integration, add recipe, edit recipe, delete
 recipe, recipe list with title search, recipe detail,
 display images (list thumbnails and detail photo),
 import image from a file, display animations (list/detail
-transitions, image loading state).
+transitions, image loading state), network JSON import
+from a URL.
 
 Out of scope for this stack, as for the others at this
-stage: network JSON/image import, raw-file JSON
+stage: network image import, raw-file JSON
 import/export, CPU/memory profiling, Windows/macOS builds.

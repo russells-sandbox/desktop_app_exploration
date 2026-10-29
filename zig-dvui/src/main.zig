@@ -4,13 +4,18 @@ const db = @import("db.zig");
 const search = @import("search.zig");
 const images = @import("images.zig");
 const imageloader = @import("imageloader.zig");
+const json_import = @import("json_import.zig");
 
 // Recipe manager test app.
 // Recipes load from SQLite (db.zig) in the current working
 // directory, seeded once from the seed data below — the same
 // seed the Rust and Odin versions use (Banana Bread, Tomato
 // Basil Pasta, Chicken Stir Fry; 19 ingredients, 13 steps).
-// No network yet.
+// Network JSON import (json_import.zig) fetches recipes
+// from a URL on a worker thread, like rust-egui's: a URL
+// field and Import button in the left pane, a spinner
+// while importing, a count message on success, and an
+// error message on failure.
 //
 // Layout, like the Rust version:
 //   - left pane: "Recipes", a title search box, an "Add
@@ -147,6 +152,18 @@ fn setFormError(comptime fmt: []const u8, args: anytype) void {
 fn setDetailError(comptime fmt: []const u8, args: anytype) void {
     detail_error = std.fmt.bufPrint(&detail_error_buf, fmt, args) catch "Error.";
 }
+
+// URL import state (left pane). The URL buffer is filled
+// with the local test-server default on the first frame;
+// import_message/import_error are formatted into their
+// buffers when pollImport reports, so they stay valid
+// across frames.
+var import_url_buffer: [1024]u8 = @splat(0);
+var import_url_set: bool = false;
+var import_message: ?[]const u8 = null;
+var import_message_buf: [512]u8 = undefined;
+var import_error: ?[]const u8 = null;
+var import_error_buf: [512]u8 = undefined;
 
 // The add/edit draft. DVUI text entries read fixed buffers
 // (up to the first zero byte) every frame, so the draft lives
@@ -290,6 +307,27 @@ pub fn appFrame() !dvui.App.Result {
     // Advance image loading and start decoding any recipe
     // image that is not already cached, failed, or loading.
     imageloader.poll();
+
+    // Collect a finished URL import, if any, without
+    // blocking: pollImport inserts on this thread (see
+    // json_import.zig) and reports the count and first id
+    // or the error, which the left pane shows below.
+    if (json_import.pollImport()) |outcome| {
+        switch (outcome) {
+            .imported => |imp| {
+                import_message = std.fmt.bufPrint(&import_message_buf, "Imported {d} recipe{s}.", .{
+                    imp.count,
+                    if (imp.count == 1) "" else "s",
+                }) catch "Imported recipes.";
+                import_error = null;
+                if (imp.count > 0) selected_id = imp.first_id;
+            },
+            .failed => |msg| {
+                import_error = std.fmt.bufPrint(&import_error_buf, "{s}", .{msg}) catch "Import failed.";
+                import_message = null;
+            },
+        }
+    }
     for (recipes) |recipe| {
         if (recipe.image_path.len > 0) imageloader.ensureStarted(recipe.image_path);
     }
@@ -343,6 +381,40 @@ pub fn appFrame() !dvui.App.Result {
                 mode = .editing;
             }
         }
+
+        // URL JSON import (json_import.zig): the field
+        // defaults to the local test-data server, as in
+        // rust-egui. While importing, a spinner replaces
+        // the button; the button is also hidden while the
+        // add/edit form is open, so a click cannot discard
+        // an in-progress edit.
+        if (!import_url_set) {
+            fillBuf(&import_url_buffer, "http://localhost:8000/recipes.json");
+            import_url_set = true;
+        }
+        dvui.label(@src(), "Import from URL:", .{}, .{});
+        var url_entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &import_url_buffer } }, .{ .expand = .horizontal });
+        const url_text = url_entry.textGet();
+        url_entry.deinit();
+        if (json_import.isImporting()) {
+            var row = dvui.box(@src(), .{ .dir = .horizontal }, .{});
+            defer row.deinit();
+            dvui.spinner(@src(), .{ .min_size_content = .{ .w = 32.0, .h = 32.0 } });
+            dvui.label(@src(), "Importing…", .{}, .{});
+        } else if (!editing) {
+            if (dvui.button(@src(), "Import", .{}, .{ .expand = .horizontal })) {
+                import_message = null;
+                import_error = null;
+                json_import.startImport(url_text);
+            }
+        }
+        if (import_message) |msg| {
+            dvui.label(@src(), "{s}", .{msg}, .{});
+        }
+        if (import_error) |err| {
+            dvui.label(@src(), "{s}", .{err}, .{});
+        }
+
         _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
         var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });

@@ -4,12 +4,13 @@ C++ version of the recipe manager test app, using the plain GTK4
 C API (via pkg-config, built with CMake and g++ — no gtkmm), the
 same toolchain approach as `cpp-imgui`.
 
-Current state: complete through "display animations: image loading
-state" — the same point `rust-egui` is at. That covers: install
-scripts, hello-world window, recipe list/detail, SQLite storage,
-add/edit/delete, title search, images (thumbnails, detail photo,
-file import), a list/detail fade transition, and asynchronous
-image loading with a spinner state.
+Current state: complete through "network request import: recipe
+JSON from a URL" — the same point `rust-egui` is at. That covers:
+install scripts, hello-world window, recipe list/detail, SQLite
+storage, add/edit/delete, title search, images (thumbnails,
+detail photo, file import), a list/detail fade transition,
+asynchronous image loading with a spinner state, and URL JSON
+import (see below).
 
 Recipes are stored in `recipes.db` in the current working directory,
 created on first run and seeded with 3 recipes (19 ingredients,
@@ -38,16 +39,17 @@ is the Fedora equivalent of `install_dependencies_ubuntu.sh`):
 
 ## Tests
 
-Recipe-data and search unit tests only (no encoding, UI,
-network, or end-to-end tests). Plain check mains, no test
+Recipe-data, search, and URL JSON import unit tests (no
+encoding, UI, or end-to-end tests). Plain check mains, no test
 framework. The DB tests use a throwaway database under `/tmp`
 and never open the real `recipes.db`.
 
 ```sh
 cmake -S . -B build
-cmake --build build --target cpp-gtk4-test-search cpp-gtk4-test-db
+cmake --build build --target cpp-gtk4-test-search cpp-gtk4-test-db cpp-gtk4-test-json-import
 ./build/cpp-gtk4-test-search
 ./build/cpp-gtk4-test-db
+./build/cpp-gtk4-test-json-import
 ```
 
 The search test links nothing but `search.h`, so it also builds
@@ -56,6 +58,14 @@ without GTK or SQLite installed:
 ```sh
 g++ -std=c++17 -Wall -Wextra test_search.cpp -o /tmp/test_search
 /tmp/test_search
+```
+
+The JSON import test links only the dependency-free importer,
+so it also builds without GTK or SQLite installed:
+
+```sh
+g++ -std=c++17 -Wall -Wextra -pthread test_json_import.cpp json_import.cpp -o /tmp/test_json_import
+/tmp/test_json_import
 ```
 
 ## How it works
@@ -68,10 +78,27 @@ g++ -std=c++17 -Wall -Wextra test_search.cpp -o /tmp/test_search
   database code the way `rust-egui` does it.
 - `images.cpp` / `images.h` — importing copies a chosen file into
   `images/`, with a `_1`, `_2` suffix on filename collision.
+- `json_import.cpp` / `json_import.h` — URL JSON import, matching
+  `rust-egui`'s `json_import.rs` in behaviour: a single recipe
+  object, a bare array, or a `{"recipes": [...]}` collection;
+  the same defaults (empty description/notes/ingredients/steps,
+  null image, 0 servings); a missing/blank title is an error.
+  No new dependencies: fetching is POSIX sockets (http:// only,
+  up to 3 redirects, chunked bodies decoded) and parsing is a
+  small parser written for these shapes, so the module builds
+  with plain g++ and the tests need neither GTK nor SQLite.
+  HTTPS is rejected with a clear message, as in `rust-egui`.
 - `main.cpp` — the GTK4 UI. The list is a `GtkListBox` with a
   `GtkSearchEntry` filter; the detail pane is rebuilt on selection
   change and fades in over 0.25s (ease-out cubic) via a GLib
-  timeout stepping the detail container's opacity.
+  timeout stepping the detail container's opacity. The left pane
+  also has the URL import row: a URL entry (defaulting to the
+  local test-data server), an Import button, a spinner while an
+  import is in flight, and a status label showing "Imported N
+  recipe(s)." or the error in red. Fetching/parsing runs on a
+  `GThread` and inserts on the main thread through an idle
+  callback, the same pattern as image loading; the first
+  imported recipe is selected.
 
 ## Stack-specific wrinkles
 
@@ -114,3 +141,8 @@ g++ -std=c++17 -Wall -Wextra test_search.cpp -o /tmp/test_search
 - GTK deprecation note: `GtkDialog` and `GtkFileChooserDialog`
   are deprecated in GTK 4.10+; this stack avoids both (custom
   windows, `GtkFileDialog`).
+- URL import is not separately disabled while an add/edit window
+  is open, unlike `rust-egui`'s "disabled while editing": the
+  add/edit window is modal and transient for the main window,
+  so the main window (and its Import button) cannot be clicked
+  at all while it is up.

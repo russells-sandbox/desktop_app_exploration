@@ -2,9 +2,10 @@
 
 Zig + DVUI version of the recipe manager test app, a 900x600
 window titled "Recipe Manager", at feature parity with the
-Rust (egui) version through the display-animation items:
-list/detail views, SQLite storage, add/edit/delete, image
-display and import, and both animations.
+Rust (egui) version through the display-animation items
+plus network JSON import: list/detail views, SQLite
+storage, add/edit/delete, image display and import, both
+animations, and importing recipes from a URL.
 
 DVUI's current main is tested with Zig v0.17.0, so that version
 is pinned in `install_ubuntu.sh`, `install_fedora.sh`, and in
@@ -47,8 +48,11 @@ equivalent of `install_ubuntu.sh`):
 
 ## Tests
 
-Unit tests cover recipe data and search only (no encoding,
-UI, network, or end-to-end tests):
+Unit tests cover recipe data, search, and network JSON
+import (parsing, URL handling, chunked bodies, fetching
+from a local one-shot server, and inserting into a
+throwaway database) — no encoding, UI, or end-to-end
+tests:
 
 ```sh
 zig build test
@@ -58,6 +62,15 @@ Search tests also run standalone, with no dependencies:
 
 ```sh
 zig test src/search.zig
+```
+
+Database and JSON-import tests run standalone too (the
+JSON-import tests link the system SQLite library, since
+`json_import.zig` imports `db.zig` for its Recipe type):
+
+```sh
+zig test src/db.zig -lsqlite3
+zig test src/json_import.zig -lsqlite3
 ```
 
 Database tests open throwaway databases in temp directories
@@ -72,7 +85,7 @@ same seed the Rust and Odin versions use: Banana Bread,
 Tomato Basil Pasta, and Chicken Stir Fry (19 ingredients,
 13 steps total). A second run loads from the database and
 does not re-seed. A load failure is shown in the detail pane
-instead of crashing. No network yet.
+instead of crashing.
 
 - Left pane: "Recipes", a title search box, an "Add recipe"
   button, and one row per matching recipe — a 32x32 thumbnail
@@ -119,6 +132,22 @@ instead of crashing. No network yet.
   image…" in the detail pane — so the UI stays responsive
   while a large image loads. The texture itself is created on
   the main thread, from the decoded pixels.
+- Network JSON import: the left pane has an "Import from
+  URL" field (defaulting to the local test-data server,
+  `http://localhost:8000/recipes.json`, as in rust-egui)
+  and an Import button. Fetching and parsing run on a
+  worker thread (`src/json_import.zig`, same pattern as the
+  image loader), with a spinner plus "Importing…" while in
+  flight; the main thread inserts the results through
+  `db.zig`, selects the first imported recipe, and shows
+  "Imported N recipe(s)." — or the error message on
+  failure. Accepted shapes are a single recipe object, a
+  bare array, or `{"recipes": [...]}` (see
+  `test-data/README.md`); http:// only, no TLS, matching
+  rust-egui, including its chunked-body and redirect
+  handling. While the add/edit form is open the Import
+  button is hidden, so a click cannot discard an
+  in-progress edit.
 
 ## Code
 
@@ -147,6 +176,21 @@ instead of crashing. No network yet.
 - `src/images.zig` — image import: copies a file into
   `images/` with `_1`/`_2` suffixes on collision, mirroring
   `rust-egui/src/images.rs`.
+- `src/json_import.zig` — network JSON import from a URL,
+  mirroring `rust-egui/src/json_import.rs`: std.json parsing
+  (shapes and defaults as above, walked by hand from a
+  `std.json.Value` so a missing title is a distinct error),
+  a plain std TCP http:// client via `std.Io.net` (no new
+  dependency, no TLS, chunked bodies, up to 3 redirects,
+  non-200 is an error naming the status), and a worker
+  thread plus a main-thread poll that inserts through
+  `db.zig`. Timeouts do NOT match rust-egui's 10s/30s:
+  this Zig release's Threaded Io panics on a non-none
+  connect timeout ("TODO implement netConnectIpPosix
+  with timeout"), and reads have no timeout knob at all,
+  so a dead or stalled server blocks only the worker
+  thread until the OS times out — never the UI. No
+  timeout is faked: the comment in `fetchOnce` says so.
 - `src/imageloader.zig` — asynchronous image loading. One
   worker thread per image path decodes with stb_image (the
   same decoder DVUI uses, via `dvui.c.stbi_load_from_memory`)

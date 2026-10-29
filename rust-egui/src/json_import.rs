@@ -199,13 +199,39 @@ fn decode_chunked(body: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn fetch_once(url: &HttpUrl) -> Result<FetchOutcome, String> {
-    let addr = (url.host.as_str(), url.port)
+    // Try every resolved address in turn, not just the first one:
+    // on this VM `localhost` resolves to ::1 first, but the local
+    // test-data server binds 127.0.0.1 only, so taking only the
+    // first address died with "Connection refused" while the
+    // server was up. (Found while porting this importer to
+    // rust-iced, which tries all addresses.)
+    let addrs: Vec<_> = (url.host.as_str(), url.port)
         .to_socket_addrs()
         .map_err(|err| format!("Could not resolve {}: {}", url.host, err))?
-        .next()
-        .ok_or_else(|| format!("Could not resolve {}.", url.host))?;
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-        .map_err(|err| format!("Could not connect to {}: {}", url.host, err))?;
+        .collect();
+    if addrs.is_empty() {
+        return Err(format!("Could not resolve {}.", url.host));
+    }
+    let mut stream = None;
+    let mut last_err = String::new();
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, Duration::from_secs(10)) {
+            Ok(connected) => {
+                stream = Some(connected);
+                break;
+            }
+            Err(err) => last_err = err.to_string(),
+        }
+    }
+    let mut stream = match stream {
+        Some(stream) => stream,
+        None => {
+            return Err(format!(
+                "Could not connect to {}: {}",
+                url.host, last_err
+            ))
+        }
+    };
     stream
         .set_read_timeout(Some(Duration::from_secs(30)))
         .map_err(|err| err.to_string())?;
@@ -453,6 +479,26 @@ mod tests {
         let response: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
         let (port, handle) = serve_once(response);
         let recipes = fetch_and_parse(&format!("http://127.0.0.1:{}/recipes.json", port)).unwrap();
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].title, "Mushroom Risotto");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_via_localhost_reaches_ipv4_only_server() {
+        // Regression test: `localhost` resolves to ::1 first on
+        // this VM, but the server binds 127.0.0.1 only, so a
+        // first-address-only connect fails with "Connection
+        // refused" even though the server is up.
+        let body = format!("{{\"recipes\": [{}]}}", SINGLE);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let response: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
+        let (port, handle) = serve_once(response);
+        let recipes = fetch_and_parse(&format!("http://localhost:{}/recipes.json", port)).unwrap();
         assert_eq!(recipes.len(), 1);
         assert_eq!(recipes[0].title, "Mushroom Risotto");
         handle.join().unwrap();

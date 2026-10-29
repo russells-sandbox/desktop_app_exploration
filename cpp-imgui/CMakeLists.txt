@@ -44,6 +44,7 @@ add_executable(cpp-imgui
     main.cpp
     db.cpp
     images.cpp
+    json_import.cpp
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
     ${imgui_SOURCE_DIR}/imgui_tables.cpp
@@ -65,8 +66,13 @@ target_link_libraries(cpp-imgui PRIVATE SDL2::SDL2 OpenGL::GL SQLite3::SQLite3 d
 # Unit tests (plain asserts, no test framework, no new dependency).
 # Search tests link nothing but the standard library, so they
 # build without SQLite/SDL/Dear ImGui. DB tests use the stack's
-# own db.cpp and need SQLite3 only.
+# own db.cpp and need SQLite3 only. JSON import tests use the
+# stack's own json_import.cpp: the parse/fetch tests need no
+# SDL/Dear ImGui and link no SQLite symbols (they need the
+# SQLite header only, for the Recipe struct in db.h), and the
+# DB test adds db.cpp and SQLite3.
 enable_testing()
+find_package(Threads REQUIRED)
 
 add_executable(cpp-imgui-search-tests tests/test_search.cpp)
 target_include_directories(cpp-imgui-search-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
@@ -76,3 +82,15 @@ add_executable(cpp-imgui-db-tests tests/test_db.cpp db.cpp)
 target_include_directories(cpp-imgui-db-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(cpp-imgui-db-tests PRIVATE SQLite3::SQLite3)
 add_test(NAME cpp-imgui-db-tests COMMAND cpp-imgui-db-tests)
+
+add_executable(cpp-imgui-json-import-tests tests/test_json_import.cpp json_import.cpp)
+# Needs the SQLite header (for the Recipe struct in db.h) but
+# links no SQLite symbols.
+target_include_directories(cpp-imgui-json-import-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${SQLite3_INCLUDE_DIRS})
+target_link_libraries(cpp-imgui-json-import-tests PRIVATE Threads::Threads)
+add_test(NAME cpp-imgui-json-import-tests COMMAND cpp-imgui-json-import-tests)
+
+add_executable(cpp-imgui-json-import-db-tests tests/test_json_import_db.cpp json_import.cpp db.cpp)
+target_include_directories(cpp-imgui-json-import-db-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(cpp-imgui-json-import-db-tests PRIVATE SQLite3::SQLite3 Threads::Threads)
+add_test(NAME cpp-imgui-json-import-db-tests COMMAND cpp-imgui-json-import-db-tests)

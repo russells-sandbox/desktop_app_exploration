@@ -6,9 +6,10 @@ a title search box, and a right pane showing the selected
 recipe's detail (description, servings, photo, ingredients,
 numbered steps, notes). Add, edit, and delete work through a
 microUI form in the detail pane, images load asynchronously
-with a loading state, and changing the selection fades/slides
-the detail pane in — matching the Rust version's state up to
-"display animations: image loading state".
+with a loading state, changing the selection fades/slides
+the detail pane in, and recipes can be imported as JSON from
+a URL — matching the Rust version, which reached network JSON
+import after "display animations: image loading state".
 
 microUI ships with Odin itself as `vendor:microui`, and it does
 no drawing itself: it measures text and emits draw commands, and
@@ -126,9 +127,9 @@ Consequences, compared with the Rust version:
   "Database error:" plus the message, like the Rust version.
 - `recipes.db` is git-ignored and never pushed.
 
-Not yet: any network/JSON work (deferred by Russell's decision
-— JSON import/export is on hold pending decisions he wants to
-make later), CPU/memory profiling, or Windows/macOS builds.
+Not yet: raw-file JSON import/export (JSON work beyond network
+import is still on hold pending decisions he wants to make
+later), CPU/memory profiling, or Windows/macOS builds.
 
 Odin dev-2026-10 is pinned in `install_ubuntu.sh` and
 `install_fedora.sh`.
@@ -181,6 +182,53 @@ from the decoded image like the Rust version's thumbnail.
   missing (`vendor/stb/src/build_stb.sh`, needs only a C
   compiler, which the scripts already install); no new system
   packages were needed for the image work.
+
+## Network JSON import
+
+The Recipes pane has an "Import from URL" row below "Add
+recipe": a URL field defaulting to
+`http://localhost:8000/recipes.json` (the local test-data
+server — see `test-data/README.md` in the repo root, and run
+it with `bash test-data/run_server.sh` from the repo root),
+an "Import from URL" button (not "Import": the edit form
+already has an image "Import" button, and microUI ids derive
+from the label, so two "Import" buttons in one frame would
+share an id), a spinner with "Importing…" while the fetch
+runs, and then "Imported N recipe(s)." or the error.
+(`src/json_import.odin`, matching rust-egui's
+`json_import.rs` behaviour, including its messages.)
+
+- **Shapes**: a single recipe object, a bare array of recipe
+  objects, or `{"recipes": [...]}`. Per-recipe fields are
+  `title`, `description`, `servings`, `image_path`, `notes`,
+  `ingredients` (`amount`, `unit`, `name` objects, in order),
+  and `steps` (strings, in order). Missing `description`,
+  `notes`, `ingredients`, or `steps` default to empty, missing
+  `image_path` to null, missing `servings` to 0. A recipe with
+  a missing or blank title is an error, not an empty-title
+  recipe — and a failed import inserts nothing.
+- **HTTP**: plain TCP with `core:net`, `http://` only, no TLS
+  and no new dependency; `https://` is rejected with a clear
+  message, like the Rust version. Up to 3 redirects are
+  followed and chunked bodies are decoded. The shared
+  test-data fixtures (`recipes.json`, `recipe-single.json`,
+  `recipes-array.json`, `recipe-minimal.json`,
+  `recipes-empty.json`, `invalid.json`) cover each shape and
+  both outcomes.
+- **Threading**: the fetch and parse run on a worker thread
+  (`core:thread`), following the image-loading pattern: the
+  main thread polls each frame with `thread.is_done`, joins,
+  and only then inserts through the same `insert_recipe` the
+  Add form uses, selecting the first imported recipe. The
+  worker touches no microUI or raylib state and allocates
+  nothing on the shared temp allocator (this file never uses
+  `fmt.tprintf`, which allocates there) — every string it
+  builds uses the heap allocator, so the main thread's
+  per-frame `free_all` cannot free a string the UI still
+  shows. Imported recipes' images then load through the
+  normal image path. microUI labels have no per-label colour,
+  so unlike the Rust version's red error label, the import
+  error here is a plain label with the error text.
 
 ## Animations
 
@@ -268,8 +316,9 @@ The built `odin-microui` binary and `recipes.db` are git-ignored.
 ## Tests
 
 Unit tests for recipe data and title search live in
-`src/search_test.odin` and `src/db_test.odin` (`@(test)`
-procedures, run with the Odin test runner):
+`src/search_test.odin` and `src/db_test.odin`, and for network
+JSON import parsing and fetching in `src/json_import_test.odin`
+(`@(test)` procedures, run with the Odin test runner):
 
 ```sh
 odin test src

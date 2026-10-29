@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:math"
 import "core:strconv"
 import "core:strings"
+import "core:thread"
 import "core:unicode/utf8"
 
 import mu "vendor:microui"
@@ -216,6 +217,7 @@ Draw_Kind :: enum {
 	Texture,
 	Detail_Spinner,
 	Thumb_Spinner,
+	Import_Spinner,
 }
 
 Draw_Record :: struct {
@@ -288,6 +290,21 @@ main :: proc() {
 
 	// Image texture cache, keyed by image path (see images.odin).
 	image_cache := make(map[string]^Image_Entry)
+
+	// Network JSON import state (see json_import.odin). The
+	// URL field defaults to the local test-data server, like
+	// the Rust version. import_message/import_error are heap
+	// strings owned by main (poll_import_job transfers the
+	// worker's error string, or clones); they are never
+	// temp-allocator strings, so they survive the frame loop's
+	// free_all(context.temp_allocator).
+	import_url_buf: [512]u8
+	import_url_len := 0
+	buf_set(import_url_buf[:], &import_url_len, "http://localhost:8000/recipes.json")
+	import_thread: ^thread.Thread
+	import_job: ^Import_Job
+	import_message := ""
+	import_error := ""
 
 	// List/detail transition state: which recipe id the current
 	// fade/slide is for, when it started, and the detail pane's
@@ -372,6 +389,10 @@ main :: proc() {
 		ensure_image_loads(&image_cache, recipes[:])
 		poll_image_loads(&image_cache)
 
+		// Collect a finished URL import, if any, and insert it
+		// (see poll_import_job in json_import.odin).
+		poll_import_job(db, &recipes, &selected_id, &import_thread, &import_job, &import_message, &import_error)
+
 		// List/detail transition progress, 0.0 (just changed) to
 		// 1.0 (settled), eased so it starts fast and slows into
 		// place — the same 0.25s ease-out cubic as the Rust
@@ -449,6 +470,61 @@ main :: proc() {
 					editing = true
 					form_error = ""
 				}
+			}
+			// Network JSON import from a URL (see
+			// json_import.odin), like the Rust version's left
+			// panel: a URL field, an Import button, a spinner
+			// and "Importing…" while the worker thread runs,
+			// then a success message with the imported count
+			// or the error. The button is ignored while
+			// editing, so an import cannot discard an
+			// in-progress edit, and while an import is in
+			// flight the spinner replaces the button. microUI
+			// labels have no per-label colour, so unlike the
+			// Rust version's red error label, the error here
+			// is a plain label with the error text. The button
+			// reads "Import from URL", not "Import": microUI
+			// ids derive from the label, and the edit form
+			// already has an "Import" button (for images),
+			// which can be visible in the same frame while
+			// editing — two "Import" buttons would share one
+			// id and interfere with each other.
+			mu.label(ctx, "Import from URL:")
+			mu.textbox(ctx, import_url_buf[:], &import_url_len)
+			if import_thread != nil {
+				mu.label(ctx, "Importing…")
+				mu.layout_row(ctx, {-1}, 32)
+				spin_rect := mu.layout_next(ctx)
+				spin_clip := mu.get_clip_rect(ctx)
+				append(&draw_records, Draw_Record{
+					kind = .Import_Spinner,
+					rect = spin_rect, clip = spin_clip,
+				})
+				mu.layout_row(ctx, {-1}, 0)
+			} else if res := mu.button(ctx, "Import from URL", .NONE, {}); .SUBMIT in res && !editing {
+				// Fetch and parse on a worker thread;
+				// poll_import_job collects the result. A
+				// previous message or error is freed and
+				// cleared so the spinner is the only status
+				// shown. (Both are heap-owned when non-empty.)
+				if import_message != "" {
+					delete(import_message)
+				}
+				if import_error != "" {
+					delete(import_error)
+				}
+				import_message = ""
+				import_error = ""
+				job := new(Import_Job)
+				job.url = strings.clone(string(import_url_buf[:import_url_len]))
+				import_job = job
+				import_thread = thread.create_and_start_with_poly_data(job, import_job_proc)
+			}
+			if import_message != "" {
+				mu.label(ctx, import_message)
+			}
+			if import_error != "" {
+				mu.label(ctx, import_error)
 			}
 			for recipe in recipes {
 				if !matches_search(recipe.title, query) {
@@ -838,6 +914,10 @@ main :: proc() {
 					record.rect.y + record.rect.h / 2,
 					10,
 				)
+			case .Import_Spinner:
+				draw_spinner(record.rect.x + 14, record.rect.y + 16, 10)
+				import_cstr := strings.clone_to_cstring("Importing…", context.temp_allocator)
+				rl.DrawText(import_cstr, record.rect.x + 32, record.rect.y + 6, FONT_SIZE, rl.DARKGRAY)
 			}
 			rl.EndScissorMode()
 		}
@@ -857,5 +937,18 @@ main :: proc() {
 
 		rl.EndDrawing()
 		free_all(context.temp_allocator)
+	}
+
+	// Join an import still in flight when the window closes,
+	// rather than leaving its thread running: its recipes were
+	// never inserted, so they are freed (see
+	// discard_import_job in json_import.odin).
+	discard_import_job(&import_thread, &import_job)
+	// Import status strings are heap-owned when non-empty.
+	if import_message != "" {
+		delete(import_message)
+	}
+	if import_error != "" {
+		delete(import_error)
 	}
 }

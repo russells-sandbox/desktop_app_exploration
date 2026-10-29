@@ -22,12 +22,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
 
 #include "db.h"
+#include "json_import.h"
 #include "images.h"
 #include "search.h"
 
@@ -39,6 +41,12 @@ struct App {
     GtkWidget* window = nullptr;
     GtkWidget* list_box = nullptr;
     GtkWidget* search_entry = nullptr;
+    // URL import widgets (left pane, below the Add button).
+    GtkWidget* import_url_entry = nullptr;
+    GtkWidget* import_button = nullptr;
+    GtkWidget* import_status_label = nullptr;
+    GtkWidget* import_spinner = nullptr;
+    bool import_in_flight = false;
     GtkWidget* detail_box = nullptr;
     GtkWidget* image_box = nullptr;
 
@@ -179,6 +187,7 @@ void refresh_detail(App* app);
 void on_edit_clicked(GtkButton* button, gpointer data);
 void on_delete_clicked(GtkButton* button, gpointer data);
 void on_import_clicked(GtkButton* button, gpointer data);
+void on_json_import_clicked(GtkButton* button, gpointer data);
 
 // --- Image loading (worker thread + main-thread idle callback) ---
 
@@ -899,6 +908,166 @@ void on_import_clicked(GtkButton* /*button*/, gpointer data) {
                          on_import_file_chosen, app);
 }
 
+// --- URL JSON import ---
+//
+// Same shape as the image loading above: the fetch and parse run
+// on a GThread (see json_import.h, which does http:// only, no
+// TLS) and the result comes back to the main thread through an
+// idle callback, which does the database inserts with the same
+// insert_recipe the Add form uses. Fetching/parsing never blocks
+// the UI, and GTK calls never happen off the main thread.
+// While an import is in flight the left pane shows a spinner
+// plus "Importing…", the Import button is insensitive, and
+// afterwards the status label shows either "Imported N
+// recipe(s)." or the error, in red, matching rust-egui's
+// success/error messages. The first imported recipe is selected.
+// A failed insert stops the import, leaving any recipes already
+// inserted in place, exactly as rust-egui's poll_imports does.
+// The Import button is not separately disabled while an add/edit
+// window is open: that window is modal and transient for the
+// main window, so the main window cannot be clicked at all
+// while it is up, which is the GTK equivalent of rust-egui's
+// "disabled while editing".
+
+struct ImportJob {
+    App* app;
+    std::string url;
+    std::vector<ImportedRecipe> recipes;
+    std::string error;
+    bool ok = false;
+};
+
+void set_import_status(App* app, const std::string& text, bool error) {
+    if (app->import_status_label == nullptr) {
+        return;
+    }
+    if (error) {
+        char* escaped = g_markup_escape_text(text.c_str(), -1);
+        std::string markup =
+            "<span foreground=\"red\">" + std::string(escaped) + "</span>";
+        g_free(escaped);
+        gtk_label_set_markup(GTK_LABEL(app->import_status_label),
+                             markup.c_str());
+    } else {
+        gtk_label_set_text(GTK_LABEL(app->import_status_label),
+                           text.c_str());
+    }
+}
+
+gboolean on_import_finished(gpointer data) {
+    ImportJob* job = static_cast<ImportJob*>(data);
+    App* app = job->app;
+    if (app->alive) {
+        app->import_in_flight = false;
+        gtk_widget_set_sensitive(app->import_button, TRUE);
+        gtk_widget_set_visible(app->import_spinner, FALSE);
+        gtk_spinner_stop(GTK_SPINNER(app->import_spinner));
+        if (!job->ok) {
+            set_import_status(app, job->error, true);
+        } else {
+            // Insert on the UI thread, stopping at the first
+            // failure (recipes already inserted stay inserted).
+            long long first_id = 0;
+            bool has_first = false;
+            bool insert_failed = false;
+            std::string insert_error;
+            long long keep_id = app->selected_id;
+            bool keep_selection = app->has_selection;
+            for (const ImportedRecipe& imported : job->recipes) {
+                Recipe recipe;
+                recipe.title = imported.title;
+                recipe.description = imported.description;
+                recipe.servings = static_cast<int>(std::clamp(
+                    imported.servings,
+                    static_cast<long long>(
+                        std::numeric_limits<int>::min()),
+                    static_cast<long long>(
+                        std::numeric_limits<int>::max())));
+                recipe.image_path = imported.image_path;
+                for (const ImportedIngredient& ingredient :
+                     imported.ingredients) {
+                    recipe.ingredients.push_back(Ingredient{
+                        ingredient.amount, ingredient.unit,
+                        ingredient.name});
+                }
+                recipe.steps = imported.steps;
+                recipe.notes = imported.notes;
+                if (!insert_recipe(app->db, recipe, insert_error)) {
+                    insert_failed = true;
+                    break;
+                }
+                if (!has_first) {
+                    first_id = recipe.id;
+                    has_first = true;
+                }
+            }
+            if (insert_failed) {
+                reload_recipes(app, keep_id, keep_selection);
+                set_import_status(app,
+                                  "Could not save recipe: " +
+                                      insert_error,
+                                  true);
+            } else {
+                if (has_first) {
+                    reload_recipes(app, first_id, true);
+                } else {
+                    reload_recipes(app, keep_id, keep_selection);
+                }
+                start_image_loads(app);
+                set_import_status(
+                    app,
+                    job->recipes.size() == 1
+                        ? "Imported 1 recipe."
+                        : "Imported " +
+                              std::to_string(job->recipes.size()) +
+                              " recipes.",
+                    false);
+            }
+        }
+    }
+    delete job;
+    return G_SOURCE_REMOVE;
+}
+
+gpointer import_thread(gpointer data) {
+    ImportJob* job = static_cast<ImportJob*>(data);
+    job->ok = fetch_and_parse(job->url, job->recipes, job->error);
+    g_idle_add(on_import_finished, job);
+    return nullptr;
+}
+
+void on_json_import_clicked(GtkButton* /*button*/, gpointer data) {
+    App* app = static_cast<App*>(data);
+    if (app->import_in_flight) {
+        return;
+    }
+    const char* text =
+        gtk_editable_get_text(GTK_EDITABLE(app->import_url_entry));
+    ImportJob* job = new ImportJob{app, text != nullptr ? text : "",
+                                   {}, "", false};
+    app->import_in_flight = true;
+    gtk_widget_set_sensitive(app->import_button, FALSE);
+    gtk_widget_set_visible(app->import_spinner, TRUE);
+    gtk_spinner_start(GTK_SPINNER(app->import_spinner));
+    set_import_status(app, "Importing…", false);
+    GError* error = nullptr;
+    GThread* thread =
+        g_thread_try_new("json-import", import_thread, job, &error);
+    if (thread == nullptr) {
+        if (error != nullptr) {
+            g_error_free(error);
+        }
+        delete job;
+        app->import_in_flight = false;
+        gtk_widget_set_sensitive(app->import_button, TRUE);
+        gtk_widget_set_visible(app->import_spinner, FALSE);
+        gtk_spinner_stop(GTK_SPINNER(app->import_spinner));
+        set_import_status(app, "Could not start import thread.", true);
+        return;
+    }
+    g_thread_unref(thread);
+}
+
 }  // namespace
 
 // --- Application setup ---
@@ -952,6 +1121,26 @@ void on_activate(GtkApplication* gtk_app, gpointer /*data*/) {
     GtkWidget* add_button = gtk_button_new_with_label("Add recipe");
     g_signal_connect(add_button, "clicked", G_CALLBACK(on_add_clicked), &app);
     gtk_box_append(GTK_BOX(left), add_button);
+
+    // URL JSON import: a URL field, an Import button, a spinner
+    // while an import is in flight, and a status label for the
+    // "Imported N recipe(s)." / error message.
+    gtk_box_append(GTK_BOX(left), make_label("Import from URL:", false));
+    app.import_url_entry = gtk_entry_new();
+    gtk_editable_set_text(GTK_EDITABLE(app.import_url_entry),
+                          "http://localhost:8000/recipes.json");
+    gtk_box_append(GTK_BOX(left), app.import_url_entry);
+    GtkWidget* import_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    app.import_button = gtk_button_new_with_label("Import");
+    g_signal_connect(app.import_button, "clicked",
+                     G_CALLBACK(on_json_import_clicked), &app);
+    gtk_box_append(GTK_BOX(import_row), app.import_button);
+    app.import_spinner = gtk_spinner_new();
+    gtk_widget_set_visible(app.import_spinner, FALSE);
+    gtk_box_append(GTK_BOX(import_row), app.import_spinner);
+    gtk_box_append(GTK_BOX(left), import_row);
+    app.import_status_label = make_label("", true);
+    gtk_box_append(GTK_BOX(left), app.import_status_label);
 
     app.list_box = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(app.list_box),

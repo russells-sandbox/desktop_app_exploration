@@ -3,6 +3,8 @@ package main
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
+import "core:sync"
+import "core:thread"
 import "core:unicode/utf8"
 import rl "vendor:raylib"
 
@@ -61,6 +63,28 @@ form_error: string
 
 search_buf: [256]byte
 search_edit: bool
+
+// ---- Network JSON import ----
+
+// The URL field defaults to the local test-data server, like
+// the Rust version. Fetching and parsing run on a worker
+// thread (see import_thread); the main thread polls the
+// job once per frame (import_poll) and does the database
+// inserts itself, so importing never blocks the UI.
+import_url_buf: [512]byte
+import_url_edit: bool
+import_job: ^Import_Job
+import_message: string
+import_error: string
+
+Import_Job :: struct {
+	url:     string,
+	mutex:   sync.Mutex,
+	done:    bool,
+	recipes: []Recipe,
+	err:     string,
+	thread:  ^thread.Thread,
+}
 
 list_scroll: rl.Vector2
 detail_scroll: rl.Vector2
@@ -337,6 +361,98 @@ reload_recipes :: proc() {
 			selected_id = -1
 		}
 	}
+}
+
+// ---- Network JSON import: worker thread + poll ----
+
+// Runs on the worker thread: fetch and parse only. The
+// error string is cloned off this thread's temp allocator
+// before storing it — fetch errors are built with tprintf
+// on this thread, and the main thread reads job.err after
+// this thread has returned, so a temp string would be
+// unsafe to hand over directly. (Recipe strings are
+// already heap-cloned by parse_recipes, and the job itself
+// is heap-allocated, so both survive the thread.)
+import_thread :: proc(job: ^Import_Job) {
+	recipes, err := fetch_and_parse(job.url)
+	sync.mutex_lock(&job.mutex)
+	job.recipes = recipes
+	if err != "" {
+		job.err = strings.clone(err)
+	}
+	job.done = true
+	sync.mutex_unlock(&job.mutex)
+}
+
+start_import :: proc() {
+	if import_job != nil || db_conn == nil {
+		if db_conn == nil {
+			import_error = "Cannot import: no database is open."
+			import_message = ""
+		}
+		return
+	}
+	// A previous message or error is cleared so the spinner
+	// is the only status shown, like the Rust version.
+	import_message = ""
+	import_error = ""
+	job := new(Import_Job)
+	job.url = strings.clone(strings.trim_space(buf_str(import_url_buf[:])))
+	import_job = job
+	job.thread = thread.create_and_start_with_poly_data(job, import_thread)
+}
+
+// Collect a finished URL import, if any, without blocking:
+// the mutex-guarded done flag only. The inserts use the
+// same insert_recipe the Add form uses, on this (UI)
+// thread. A failed insert stops the import, leaving any
+// recipes already inserted in place (and reloaded, so they
+// show); an empty collection imports zero recipes with a
+// success message and no selection change. Called once per
+// frame, before drawing, next to image_poll.
+import_poll :: proc() {
+	job := import_job
+	if job == nil {
+		return
+	}
+	sync.mutex_lock(&job.mutex)
+	done := job.done
+	recipes := job.recipes
+	err := job.err
+	sync.mutex_unlock(&job.mutex)
+	if !done {
+		return
+	}
+	import_job = nil
+	if err != "" {
+		import_error = err
+		import_message = ""
+		return
+	}
+	total := len(recipes)
+	first_id: i64 = -1
+	for recipe in recipes {
+		id, derr := insert_recipe(db_conn, recipe)
+		if derr != "" {
+			import_error = strings.clone(derr)
+			import_message = ""
+			reload_recipes()
+			return
+		}
+		if first_id < 0 {
+			first_id = id
+		}
+	}
+	reload_recipes()
+	if first_id >= 0 {
+		selected_id = first_id
+	}
+	if total == 1 {
+		import_message = "Imported 1 recipe."
+	} else {
+		import_message = strings.clone(fmt.tprintf("Imported %d recipes.", total))
+	}
+	import_error = ""
 }
 
 // Fit a texture inside a box, preserving its aspect ratio
@@ -648,13 +764,17 @@ main :: proc() {
 	defer close_database(db_conn)
 	defer image_cleanup()
 
+	// Default import URL, like the Rust version's.
+	set_buf(import_url_buf[:], "http://localhost:8000/recipes.json")
+
 	for !rl.WindowShouldClose() {
 		image_poll()
+		import_poll()
 
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.RAYWHITE)
 
-		// ---- Left pane: search, Add, recipe list ----
+		// ---- Left pane: search, Add, URL import, recipe list ----
 		rl.GuiLabel({20, 12, 260, 20}, "Search recipes:")
 		text_field({20, 34, 260, 30}, search_buf[:], &search_edit)
 		if mode != .Editing {
@@ -664,6 +784,30 @@ main :: proc() {
 				form_error = ""
 			}
 		}
+
+		// URL import, like the Rust version's left panel:
+		// a URL field, an Import button (a spinner with
+		// "Importing..." while a fetch is in flight), and a
+		// success message or a red error line. The list
+		// panel below starts after whatever status text is
+		// showing, so the message is never covered.
+		rl.GuiLabel({20, 110, 260, 20}, "Import from URL:")
+		text_field({20, 132, 260, 30}, import_url_buf[:], &import_url_edit)
+		if import_job != nil {
+			draw_spinner(32, 185, 12, rl.DARKGRAY)
+			draw_text(50, 175, FONT_BODY, rl.DARKGRAY, "Importing...")
+		} else if rl.GuiButton({20, 170, 260, 30}, "Import") && mode != .Editing {
+			start_import()
+		}
+		status_y: f32 = 208
+		if import_message != "" {
+			draw_text(20, status_y, FONT_BODY, rl.DARKGRAY, import_message)
+			status_y += f32(FONT_BODY + LINE_GAP)
+		}
+		if import_error != "" {
+			status_y = draw_wrapped(20, status_y, 260, FONT_BODY, rl.RED, import_error)
+		}
+		list_top := status_y + 8
 
 		// Filtered list, case-insensitive on the title, like
 		// the Rust version. Filtering never changes the
@@ -682,7 +826,7 @@ main :: proc() {
 		// taking the rest. Everything inside the panels
 		// already derives from the panel size, so no other
 		// layout code changes.
-		list_panel := rl.Rectangle{10, 110, 280, f32(rl.GetScreenHeight() - 120)}
+		list_panel := rl.Rectangle{10, list_top, 280, f32(rl.GetScreenHeight()) - list_top - 10}
 		list_view: rl.Rectangle
 		list_content := rl.Rectangle{0, 0, list_panel.width - 20, f32(len(filtered) * 40)}
 		rl.GuiScrollPanel(list_panel, "", list_content, &list_scroll, &list_view)

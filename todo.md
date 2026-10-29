@@ -65,7 +65,7 @@ has been tested on Fedora yet.
 - [X] import image from a file and store image files on disk
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
-- [ ] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
+- [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] raw-file import: recipes as JSON, single recipe
 - [ ] raw-file import: recipes as JSON, collection
@@ -103,7 +103,7 @@ has been tested on Fedora yet.
 - [X] import image from a file and store image files on disk
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
-- [ ] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
+- [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] raw-file import: recipes as JSON, single recipe
 - [ ] raw-file import: recipes as JSON, collection
@@ -141,7 +141,7 @@ has been tested on Fedora yet.
 - [X] import image from a file and store image files on disk
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
-- [ ] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
+- [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] raw-file import: recipes as JSON, single recipe
 - [ ] raw-file import: recipes as JSON, collection
@@ -179,7 +179,7 @@ has been tested on Fedora yet.
 - [X] import image from a file and store image files on disk
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
-- [ ] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
+- [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] raw-file import: recipes as JSON, single recipe
 - [ ] raw-file import: recipes as JSON, collection
@@ -217,7 +217,7 @@ has been tested on Fedora yet.
 - [X] import image from a file and store image files on disk
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
-- [ ] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
+- [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] raw-file import: recipes as JSON, single recipe
 - [ ] raw-file import: recipes as JSON, collection
@@ -255,7 +255,7 @@ has been tested on Fedora yet.
 - [X] import image from a file and store image files on disk
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
-- [ ] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
+- [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] raw-file import: recipes as JSON, single recipe
 - [ ] raw-file import: recipes as JSON, collection

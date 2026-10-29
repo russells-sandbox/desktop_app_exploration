@@ -15,11 +15,22 @@ add_executable(cpp-gtk4
     db.cpp
     seed.cpp
     images.cpp
+    json_import.cpp
 )
 
 target_include_directories(cpp-gtk4 PRIVATE
     ${GTK4_INCLUDE_DIRS}
     ${SQLite3_INCLUDE_DIRS}
+)
+
+# The library directories matter when GTK/SQLite live outside
+# the system paths (for example, extracted .debs under a prefix
+# because apt could not complete in this VM); on a normal
+# install these are the standard system directories and change
+# nothing.
+target_link_directories(cpp-gtk4 PRIVATE
+    ${GTK4_LIBRARY_DIRS}
+    ${SQLite3_LIBRARY_DIRS}
 )
 
 target_link_libraries(cpp-gtk4 PRIVATE
@@ -31,10 +42,18 @@ target_link_libraries(cpp-gtk4 PRIVATE
 # dependencies. test-search links nothing but the search header
 # (no GTK, no SQLite), so it also builds with plain g++:
 #   g++ -std=c++17 -Wall -Wextra test_search.cpp -o /tmp/test_search
+# test-json-import links only the dependency-free importer (no
+# GTK, no SQLite), so it also builds with plain g++:
+#   g++ -std=c++17 -Wall -Wextra -pthread test_json_import.cpp json_import.cpp -o /tmp/test_json_import
 # test-db uses the stack's own DB layer against a throwaway
 # database under /tmp; it never opens the real recipes.db.
 add_executable(cpp-gtk4-test-search
     test_search.cpp
+)
+
+add_executable(cpp-gtk4-test-json-import
+    test_json_import.cpp
+    json_import.cpp
 )
 
 add_executable(cpp-gtk4-test-db
@@ -45,6 +64,10 @@ add_executable(cpp-gtk4-test-db
 
 target_include_directories(cpp-gtk4-test-db PRIVATE
     ${SQLite3_INCLUDE_DIRS}
+)
+
+target_link_directories(cpp-gtk4-test-db PRIVATE
+    ${SQLite3_LIBRARY_DIRS}
 )
 
 target_link_libraries(cpp-gtk4-test-db PRIVATE

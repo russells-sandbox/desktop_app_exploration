@@ -2,8 +2,9 @@
 
 C++ + Dear ImGui version of the recipe manager test app, with a
 recipe list/detail view loaded from SQLite, add/edit/delete,
-images, and display animations — matching rust-egui's feature set
-up to and including "display animations: image loading state".
+images, display animations, and network JSON import from a URL
+— matching rust-egui's feature set up to and including
+"network request import: recipe JSON from a URL".
 Backend is SDL2 + OpenGL3.
 
 Dear ImGui source is fetched at build time by CMake (FetchContent,
@@ -46,6 +47,25 @@ directory, created on first run and seeded with 3 recipes.
   an image is decoding, the detail pane shows a spinner arc with
   "Loading image..." and the list shows a 32px spinner in place
   of the thumbnail; the rest of the UI stays responsive.
+- Network JSON import: the list pane has a URL field (default
+  `http://localhost:8000/recipes.json`, the local test-data
+  server) and an Import button. Fetching and parsing run on a
+  worker thread (`json_import.cpp`, one thread per import) and
+  the UI thread polls for the result each frame, inserts the
+  recipes with the same `insert_recipe` the Add form uses, and
+  selects the first imported recipe. While a fetch is in flight
+  the button is replaced by a spinner with "Importing..."; on
+  completion the list pane shows "Imported N recipe(s)." or the
+  error in red. Accepted shapes, defaults, and error cases match
+  rust-egui exactly (single object, bare array, or
+  `{"recipes": [...]}`; missing title is an error). Only
+  `http://` is supported — an `https://` URL fails with a clear
+  message — because this importer uses plain POSIX sockets and
+  no TLS library, same as rust-egui. The JSON parser in
+  `json_import.cpp` is a small focused one for exactly these
+  recipe shapes (objects, arrays, strings with escapes, numbers,
+  null), not a general-purpose library; see its header for the
+  trade-off.
 
 ## File picker
 
@@ -81,27 +101,46 @@ is the Fedora equivalent of `install_dependencies_ubuntu.sh`):
 ```
 
 No new system packages were needed for the features above:
-stb_image is fetched by CMake, and the picker, threads, and
-filesystem code are all standard library. `build/` is
-git-ignored.
+stb_image is fetched by CMake, and the picker, threads,
+filesystem, and socket code are all standard library / POSIX.
+A fresh checkout needs only the packages
+`install_dependencies_ubuntu.sh` installs (cmake, g++,
+libsdl2-dev, libgl1-mesa-dev, libsqlite3-dev); the import adds
+no dependency. `build/` is git-ignored.
 
 ## Tests
 
-Unit tests for recipe data and title search only (plain asserts,
-no test framework). They use a throwaway temp database, never
-`recipes.db`. Encoding, UI, network, and end-to-end tests are
-out of scope here.
+Unit tests for recipe data, title search, and URL JSON import
+only (plain asserts, no test framework). They use a throwaway
+temp database, never `recipes.db`. Encoding, UI, and end-to-end
+tests are out of scope here.
 
 ```sh
 # Search tests only: no SQLite/SDL/Dear ImGui needed.
 g++ -std=c++17 -I. tests/test_search.cpp -o /tmp/cpp-imgui-search-tests
 /tmp/cpp-imgui-search-tests
 
-# Both test executables, once dependencies are installed:
+# JSON import parse/fetch tests only: no SDL/Dear ImGui needed,
+# and no SQLite symbols are linked (the SQLite header is still
+# needed to compile, for the Recipe struct in db.h, so this
+# needs libsqlite3-dev installed, as the install script does).
+g++ -std=c++17 -I. tests/test_json_import.cpp json_import.cpp -o /tmp/cpp-imgui-json-import-tests
+/tmp/cpp-imgui-json-import-tests
+
+# All test executables, once dependencies are installed:
 cmake -S . -B build
-cmake --build build --target cpp-imgui-search-tests cpp-imgui-db-tests
+cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+To try the import against the shared fixtures by hand, start
+the test-data server from the repo root's `test-data/`
+(`bash run_server.sh`, port 8000 by default), run the app, and
+click Import with the default URL — or point the URL field at
+another fixture (`recipe-single.json`, `recipes-array.json`,
+`recipe-minimal.json`, `recipes-empty.json`, `invalid.json`)
+and click Import again. Stop the server with
+`bash kill_server.sh` when done.
 
 ## Notes and wrinkles
 
