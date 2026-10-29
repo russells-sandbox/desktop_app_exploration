@@ -16,6 +16,27 @@ app in this repo, so all stacks download the same data.
   and `steps` (array of strings, in order). Amounts are strings so
   fractions like `"1/2"` survive as written.
 
+- `recipe-single.json` — one recipe as a bare object, not wrapped
+  in a collection: Mushroom Risotto. For importers that accept a
+  single recipe document.
+- `recipes-array.json` — a bare array of 2 recipes, no wrapper
+  object: Pancakes and Greek Salad.
+- `recipe-minimal.json` — a single recipe with only a `title`
+  (`"Toast"`). Every other field is missing, so an importer must
+  fill in its defaults rather than reject the recipe.
+- `recipes-empty.json` — `{"recipes": []}`. Importing it must
+  succeed with zero recipes, not error.
+- `invalid.json` — not JSON at all. Importing it must fail with an
+  error, not crash or import a partial recipe.
+
+An importer accepts all three document shapes — a single recipe
+object, a bare array of recipes, and an object with a `recipes`
+array — and the same per-recipe fields as `recipes.json`. A missing
+`description`, `notes`, `ingredients`, or `steps` defaults to empty;
+a missing `image_path` defaults to null; a missing `servings`
+defaults to 0; a missing ingredient `amount` or `unit` defaults to
+empty. A recipe with no usable `title` is an error.
+
 - `run_server.sh` — starts a local server for this directory in the
   background (Python standard library only, no server code to
   maintain). It records the server's PID in `.server.pid` and its

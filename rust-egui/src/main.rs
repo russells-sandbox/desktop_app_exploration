@@ -1,5 +1,6 @@
 mod db;
 mod images;
+mod json_import;
 mod search;
 mod seed;
 
@@ -119,6 +120,14 @@ struct RecipeApp {
     // in this version; fine for a small test app.
     textures: HashMap<String, egui::TextureHandle>,
     texture_failures: HashSet<String>,
+    // URL import in progress, if any. The fetch and parse run on a
+    // worker thread (see json_import) and send the result back
+    // here, so importing never blocks the UI; while this is Some,
+    // the left pane shows a loading spinner instead of the button.
+    import_receiver: Option<Receiver<Result<Vec<Recipe>, String>>>,
+    import_url: String,
+    import_message: Option<String>,
+    import_error: Option<String>,
     // Images still decoding on a worker thread, keyed by image path.
     // Decoding runs off the UI thread, so a large image never blocks
     // the interface: while a path is in this map, the list and detail
@@ -171,6 +180,10 @@ fn main() -> eframe::Result<()> {
                 form_error: None,
                 detail_error: None,
                 confirming_delete: false,
+                import_receiver: None,
+                import_url: "http://localhost:8000/recipes.json".to_string(),
+                import_message: None,
+                import_error: None,
                 textures: HashMap::new(),
                 texture_failures: HashSet::new(),
                 pending_textures: HashMap::new(),
@@ -247,6 +260,60 @@ impl RecipeApp {
             }
         }
     }
+
+    // Collect a finished URL import, if any, without blocking:
+    // try_recv only. The worker thread already fetched and parsed,
+    // so this step is just the database inserts, using the same
+    // db::insert_recipe the Add form uses. A failed insert stops
+    // the import, leaving any recipes already inserted in place.
+    fn poll_imports(&mut self) {
+        let Some(receiver) = &self.import_receiver else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("Import failed.".to_string())
+            }
+        };
+        self.import_receiver = None;
+        match result {
+            Ok(recipes) => {
+                let total = recipes.len();
+                let mut first_imported_id: Option<i64> = None;
+                for mut recipe in recipes {
+                    match db::insert_recipe(&recipe) {
+                        Ok(id) => {
+                            recipe.id = id;
+                            if first_imported_id.is_none() {
+                                first_imported_id = Some(id);
+                            }
+                            self.recipes.push(recipe);
+                        }
+                        Err(err) => {
+                            self.import_error = Some(err.to_string());
+                            self.import_message = None;
+                            return;
+                        }
+                    }
+                }
+                if let Some(id) = first_imported_id {
+                    self.selected_id = Some(id);
+                }
+                self.import_message = Some(if total == 1 {
+                    "Imported 1 recipe.".to_string()
+                } else {
+                    format!("Imported {} recipes.", total)
+                });
+                self.import_error = None;
+            }
+            Err(err) => {
+                self.import_error = Some(err);
+                self.import_message = None;
+            }
+        }
+    }
 }
 
 impl eframe::App for RecipeApp {
@@ -255,12 +322,25 @@ impl eframe::App for RecipeApp {
         // list and detail panes below can use the cache by lookup
         // and show a spinner for anything still decoding.
         self.poll_image_loads(ui.ctx());
+        // Collect a finished URL import (see poll_imports), and
+        // keep repainting while one is in flight, since egui
+        // otherwise only repaints on input and the spinner and
+        // the result would sit uncollected.
+        self.poll_imports();
+        if self.import_receiver.is_some() {
+            ui.ctx().request_repaint();
+        }
 
         let editing = matches!(self.mode, Mode::Editing { .. });
         // Edit a copy of the search text inside the panel to keep
         // the borrow checker happy, then write it back afterwards.
         let mut selected_id = self.selected_id;
         let mut search = self.search.clone();
+        // Same copy-out pattern as search: the panel closure
+        // borrows self for the list, so the URL text is edited
+        // in a copy and written back after the panel.
+        let mut import_url = self.import_url.clone();
+        let mut import_clicked = false;
 
         egui::Panel::left("recipe_list").show(ui, |ui| {
             ui.heading("Recipes");
@@ -275,6 +355,26 @@ impl eframe::App for RecipeApp {
                     is_new: true,
                 };
                 self.form_error = None;
+            }
+            ui.separator();
+            ui.label("Import from URL:");
+            ui.add(
+                egui::TextEdit::singleline(&mut import_url)
+                    .hint_text("http://localhost:8000/recipes.json"),
+            );
+            if self.import_receiver.is_some() {
+                ui.horizontal(|ui| {
+                    ui.add(egui::Spinner::new());
+                    ui.label("Importing…");
+                });
+            } else if ui.button("Import").clicked() && !editing {
+                import_clicked = true;
+            }
+            if let Some(message) = &self.import_message {
+                ui.label(message);
+            }
+            if let Some(error) = &self.import_error {
+                ui.colored_label(egui::Color32::RED, error);
             }
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -317,6 +417,20 @@ impl eframe::App for RecipeApp {
 
         self.selected_id = selected_id;
         self.search = search;
+        self.import_url = import_url;
+        if import_clicked {
+            // Fetch and parse on a worker thread; poll_imports
+            // collects the result. A previous message or error is
+            // cleared so the spinner is the only status shown.
+            self.import_message = None;
+            self.import_error = None;
+            let (sender, receiver) = channel();
+            let url = self.import_url.clone();
+            std::thread::spawn(move || {
+                let _ = sender.send(json_import::fetch_and_parse(&url));
+            });
+            self.import_receiver = Some(receiver);
+        }
 
         // List/detail transition progress, 0.0 (just changed) to 1.0
         // (settled), eased so it starts fast and slows into place.
@@ -602,5 +716,108 @@ impl eframe::App for RecipeApp {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::path::PathBuf;
+    use std::sync::mpsc::channel;
+    use std::sync::MutexGuard;
+
+    // Holds the DB test lock and restores the working directory on
+    // drop, so a failed assertion does not strand later tests in
+    // the throwaway directory. Same reason as db::CWD_TEST_LOCK:
+    // the working directory is process-global.
+    struct TestCwd {
+        _lock: MutexGuard<'static, ()>,
+        original: PathBuf,
+        tmp: PathBuf,
+    }
+
+    impl Drop for TestCwd {
+        fn drop(&mut self) {
+            let _ = env::set_current_dir(&self.original);
+            let _ = std::fs::remove_dir_all(&self.tmp);
+        }
+    }
+
+    fn seeded_app() -> (RecipeApp, TestCwd) {
+        let lock = db::CWD_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let tmp = env::temp_dir().join(format!("recipe-import-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let original = env::current_dir().unwrap();
+        env::set_current_dir(&tmp).unwrap();
+        let cwd = TestCwd {
+            _lock: lock,
+            original,
+            tmp,
+        };
+        let recipes = db::load_recipes().unwrap();
+        assert_eq!(recipes.len(), 3);
+        let selected_id = recipes.first().map(|recipe| recipe.id);
+        let app = RecipeApp {
+            recipes,
+            selected_id,
+            search: String::new(),
+            load_error: None,
+            mode: Mode::Viewing,
+            form_error: None,
+            detail_error: None,
+            confirming_delete: false,
+            import_receiver: None,
+            import_url: String::new(),
+            import_message: None,
+            import_error: None,
+            textures: HashMap::new(),
+            texture_failures: HashSet::new(),
+            pending_textures: HashMap::new(),
+            detail_anim_start: 0.0,
+            detail_anim_for: None,
+        };
+        (app, cwd)
+    }
+
+    #[test]
+    fn poll_imports_inserts_and_reports() {
+        let (mut app, _cwd) = seeded_app();
+        let imported = json_import::parse_recipes(
+            r#"{"title": "Test Soup", "servings": 2, "steps": ["Boil."]}"#,
+        )
+        .unwrap();
+        let (sender, receiver) = channel();
+        sender.send(Ok(imported)).unwrap();
+        app.import_receiver = Some(receiver);
+        app.poll_imports();
+        assert_eq!(app.recipes.len(), 4);
+        let imported_recipe = app
+            .recipes
+            .iter()
+            .find(|recipe| recipe.title == "Test Soup")
+            .unwrap();
+        assert_eq!(imported_recipe.servings, 2);
+        assert_eq!(imported_recipe.steps, vec!["Boil."]);
+        assert_eq!(app.selected_id, Some(imported_recipe.id));
+        assert_eq!(app.import_message.as_deref(), Some("Imported 1 recipe."));
+        assert_eq!(app.import_error, None);
+        assert!(app.import_receiver.is_none());
+    }
+
+    #[test]
+    fn poll_imports_error_reports_without_inserting() {
+        let (mut app, _cwd) = seeded_app();
+        let (sender, receiver) = channel();
+        sender.send(Err("boom".to_string())).unwrap();
+        app.import_receiver = Some(receiver);
+        app.poll_imports();
+        assert_eq!(app.recipes.len(), 3);
+        assert_eq!(app.import_error.as_deref(), Some("boom"));
+        assert_eq!(app.import_message, None);
+        assert!(app.import_receiver.is_none());
     }
 }

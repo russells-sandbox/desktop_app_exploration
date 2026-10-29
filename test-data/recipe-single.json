@@ -1,0 +1,46 @@
+{
+  "title": "Mushroom Risotto",
+  "description": "Creamy arborio rice with mushrooms, white wine, and parmesan.",
+  "servings": 4,
+  "image_path": null,
+  "notes": "Stir often and add the stock a ladle at a time; the rice should stay loose, not stiff.",
+  "ingredients": [
+    {
+      "amount": "1",
+      "unit": "lb",
+      "name": "mushrooms, sliced"
+    },
+    {
+      "amount": "1 1/2",
+      "unit": "cups",
+      "name": "arborio rice"
+    },
+    {
+      "amount": "1",
+      "unit": "",
+      "name": "onion, finely chopped"
+    },
+    {
+      "amount": "1/2",
+      "unit": "cup",
+      "name": "white wine"
+    },
+    {
+      "amount": "6",
+      "unit": "cups",
+      "name": "vegetable stock, warm"
+    },
+    {
+      "amount": "1/2",
+      "unit": "cup",
+      "name": "parmesan, grated"
+    }
+  ],
+  "steps": [
+    "Sauté the mushrooms until browned, then set them aside.",
+    "Cook the onion in butter until soft, then stir in the rice until it looks translucent at the edges.",
+    "Pour in the wine and stir until it has mostly evaporated.",
+    "Add the warm stock a ladle at a time, stirring often and letting each addition absorb before adding the next, for about 20 minutes.",
+    "Stir in the mushrooms and parmesan, season, and serve at once."
+  ]
+}

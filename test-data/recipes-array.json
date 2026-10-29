@@ -1,0 +1,76 @@
+[
+  {
+    "title": "Pancakes",
+    "description": "Fluffy pancakes for a weekend breakfast.",
+    "servings": 4,
+    "image_path": null,
+    "notes": "Do not overmix the batter; a few lumps are fine.",
+    "ingredients": [
+      {
+        "amount": "2",
+        "unit": "cups",
+        "name": "flour"
+      },
+      {
+        "amount": "2",
+        "unit": "tbsp",
+        "name": "sugar"
+      },
+      {
+        "amount": "2",
+        "unit": "tsp",
+        "name": "baking powder"
+      },
+      {
+        "amount": "2",
+        "unit": "",
+        "name": "eggs"
+      },
+      {
+        "amount": "1 1/2",
+        "unit": "cups",
+        "name": "milk"
+      }
+    ],
+    "steps": [
+      "Whisk the flour, sugar, and baking powder together.",
+      "Whisk in the eggs and milk until just combined.",
+      "Ladle batter onto a hot, lightly buttered pan and cook until bubbles appear on the surface.",
+      "Flip and cook until golden, then serve warm."
+    ]
+  },
+  {
+    "title": "Greek Salad",
+    "description": "Tomatoes, cucumber, olives, and feta with lemon and oregano.",
+    "servings": 2,
+    "image_path": null,
+    "notes": "",
+    "ingredients": [
+      {
+        "amount": "4",
+        "unit": "",
+        "name": "tomatoes, cut into wedges"
+      },
+      {
+        "amount": "1",
+        "unit": "",
+        "name": "cucumber, sliced"
+      },
+      {
+        "amount": "1/2",
+        "unit": "cup",
+        "name": "kalamata olives"
+      },
+      {
+        "amount": "4",
+        "unit": "oz",
+        "name": "feta, crumbled"
+      }
+    ],
+    "steps": [
+      "Combine the tomatoes, cucumber, and olives in a bowl.",
+      "Drizzle with olive oil and lemon juice, sprinkle with oregano, and toss.",
+      "Top with the feta and serve."
+    ]
+  }
+]
