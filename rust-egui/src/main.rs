@@ -341,6 +341,7 @@ impl eframe::App for RecipeApp {
         // in a copy and written back after the panel.
         let mut import_url = self.import_url.clone();
         let mut import_clicked = false;
+        let mut import_file_path: Option<std::path::PathBuf> = None;
 
         egui::Panel::left("recipe_list").show(ui, |ui| {
             ui.heading("Recipes");
@@ -367,8 +368,24 @@ impl eframe::App for RecipeApp {
                     ui.add(egui::Spinner::new());
                     ui.label("Importing…");
                 });
-            } else if ui.button("Import").clicked() && !editing {
-                import_clicked = true;
+            } else {
+                if ui.button("Import").clicked() && !editing {
+                    import_clicked = true;
+                }
+                // Raw-file import: same shapes, defaults, and
+                // message/error display as the URL import, and
+                // the same worker-thread + poll_imports path, so
+                // reading and parsing never block the UI. The
+                // file dialog itself is the same rfd pattern the
+                // image chooser uses.
+                if ui.button("Import from file…").clicked() && !editing {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("JSON", &["json"])
+                        .pick_file()
+                    {
+                        import_file_path = Some(path);
+                    }
+                }
             }
             if let Some(message) = &self.import_message {
                 ui.label(message);
@@ -428,6 +445,17 @@ impl eframe::App for RecipeApp {
             let url = self.import_url.clone();
             std::thread::spawn(move || {
                 let _ = sender.send(json_import::fetch_and_parse(&url));
+            });
+            self.import_receiver = Some(receiver);
+        }
+        if let Some(path) = import_file_path {
+            // Same collection path as a URL import, with the file
+            // read and parse on the worker thread instead.
+            self.import_message = None;
+            self.import_error = None;
+            let (sender, receiver) = channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(json_import::import_from_file(&path));
             });
             self.import_receiver = Some(receiver);
         }
