@@ -66,6 +66,18 @@ directory, created on first run and seeded with 3 recipes.
   recipe shapes (objects, arrays, strings with escapes, numbers,
   null), not a general-purpose library; see its header for the
   trade-off.
+- Raw-file JSON import: an "Import from file..." button beside
+  the Import button opens the same built-in file picker
+  (filtered to `.json` files, so it needs no helper program).
+  The chosen file is read and parsed on a worker thread through
+  the same import path as the URL import — same shapes and
+  defaults, same "Imported N recipe(s)." / error display, same
+  first-imported-recipe selection — and the buttons are disabled
+  while editing and replaced by the spinner while an import is
+  in flight. The file must be valid UTF-8; a non-UTF-8 file is
+  an error, because encoding detection is a separate feature.
+  Read failures report "Could not read file <path>: <reason>",
+  as in rust-egui.
 
 ## File picker
 
@@ -110,10 +122,10 @@ no dependency. `build/` is git-ignored.
 
 ## Tests
 
-Unit tests for recipe data, title search, and URL JSON import
-only (plain asserts, no test framework). They use a throwaway
-temp database, never `recipes.db`. Encoding, UI, and end-to-end
-tests are out of scope here.
+Unit tests for recipe data, title search, and URL and raw-file
+JSON import only (plain asserts, no test framework). They use a
+throwaway temp database, never `recipes.db`. Encoding, UI, and
+end-to-end tests are out of scope here.
 
 ```sh
 # Search tests only: no SQLite/SDL/Dear ImGui needed.

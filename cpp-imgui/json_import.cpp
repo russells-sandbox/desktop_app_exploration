@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <limits>
 #include <utility>
 
@@ -942,4 +943,85 @@ bool fetch_and_parse(const std::string& url, std::vector<Recipe>& recipes,
         return false;
     }
     return parse_recipes(body, recipes, error);
+}
+
+// Checks that text is well-formed UTF-8: correct leading and
+// continuation bytes, no overlong encodings, no surrogates, and
+// nothing above U+10FFFF. The JSON parser below passes raw bytes
+// through in strings, so without this check a Latin-1 or
+// Shift_JIS file would silently import as mojibake instead of
+// failing; encoding detection is a separate todo item, so for
+// now a non-UTF-8 file is an error.
+bool is_valid_utf8(const std::string& text) {
+    size_t i = 0;
+    while (i < text.size()) {
+        unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < 0x80) {
+            ++i;
+            continue;
+        }
+        unsigned int code_point = 0;
+        int extra = 0;
+        if ((c & 0xE0) == 0xC0) {
+            code_point = c & 0x1F;
+            extra = 1;
+            if (code_point < 2) {
+                return false;  // Overlong (C0/C1).
+            }
+        } else if ((c & 0xF0) == 0xE0) {
+            code_point = c & 0x0F;
+            extra = 2;
+        } else if ((c & 0xF8) == 0xF0) {
+            code_point = c & 0x07;
+            extra = 3;
+            if (code_point > 4) {
+                return false;  // Above U+10FFFF.
+            }
+        } else {
+            return false;  // Stray continuation byte or 0xF8+.
+        }
+        if (i + static_cast<size_t>(extra) >= text.size()) {
+            return false;  // Truncated sequence.
+        }
+        for (int j = 1; j <= extra; ++j) {
+            unsigned char next = static_cast<unsigned char>(text[i + static_cast<size_t>(j)]);
+            if ((next & 0xC0) != 0x80) {
+                return false;
+            }
+            code_point = (code_point << 6) | (next & 0x3F);
+        }
+        if ((extra == 2 && code_point < 0x800) ||
+            (extra == 3 && code_point < 0x10000) ||
+            (code_point >= 0xD800 && code_point <= 0xDFFF) ||
+            code_point > 0x10FFFF) {
+            return false;  // Overlong, surrogate, or out of range.
+        }
+        i += static_cast<size_t>(extra) + 1;
+    }
+    return true;
+}
+
+bool import_from_file(const std::string& path, std::vector<Recipe>& recipes,
+                      std::string& error) {
+    error.clear();
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        // errno is set by the failed open on POSIX; fall back to
+        // a plain message if it somehow is not.
+        int reason = errno;
+        error = "Could not read file " + path + ": " +
+                (reason != 0 ? std::strerror(reason) : "could not open file") + ".";
+        return false;
+    }
+    std::string text((std::istreambuf_iterator<char>(file)),
+                     std::istreambuf_iterator<char>());
+    if (file.bad()) {
+        error = "Could not read file " + path + ": read failed.";
+        return false;
+    }
+    if (!is_valid_utf8(text)) {
+        error = "Could not read file " + path + ": file is not valid UTF-8.";
+        return false;
+    }
+    return parse_recipes(text, recipes, error);
 }

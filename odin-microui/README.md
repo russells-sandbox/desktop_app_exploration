@@ -8,8 +8,9 @@ numbered steps, notes). Add, edit, and delete work through a
 microUI form in the detail pane, images load asynchronously
 with a loading state, changing the selection fades/slides
 the detail pane in, and recipes can be imported as JSON from
-a URL — matching the Rust version, which reached network JSON
-import after "display animations: image loading state".
+a URL or from a file — matching the Rust version, which
+reached network JSON import after "display animations: image
+loading state".
 
 microUI ships with Odin itself as `vendor:microui`, and it does
 no drawing itself: it measures text and emits draw commands, and
@@ -127,9 +128,8 @@ Consequences, compared with the Rust version:
   "Database error:" plus the message, like the Rust version.
 - `recipes.db` is git-ignored and never pushed.
 
-Not yet: raw-file JSON import/export (JSON work beyond network
-import is still on hold pending decisions he wants to make
-later), CPU/memory profiling, or Windows/macOS builds.
+Not yet: raw-file JSON export, CPU/memory profiling, or
+Windows/macOS builds.
 
 Odin dev-2026-10 is pinned in `install_ubuntu.sh` and
 `install_fedora.sh`.
@@ -230,6 +230,25 @@ runs, and then "Imported N recipe(s)." or the error.
   so unlike the Rust version's red error label, the import
   error here is a plain label with the error text.
 
+## Raw-file JSON import
+
+The Recipes pane also has an "Import from file" row below
+the URL import: a path field and an "Import from file"
+button, shown only when not editing and no import is in
+flight. It reads the file with `import_from_file`
+(`src/json_import.odin`) and parses it with the same
+`parse_recipes` the URL importer uses, so the three shapes
+and the defaults are identical, and it goes through the same
+worker-thread + poll path and the same message/error display
+— reading and parsing never block the UI. It is
+deliberately UTF-8 only, like the Rust version: a non-UTF-8
+file errors as a read failure, because encoding detection
+is the separate text-encoding item. The path is typed, not
+picked: raylib has no file picker, and this is the pattern
+the image import already uses (unlike the Rust version's rfd
+dialog). An empty path does nothing, like a cancelled
+dialog.
+
 ## Animations
 
 - **List/detail transition** (0.25s, ease-out cubic
@@ -317,7 +336,8 @@ The built `odin-microui` binary and `recipes.db` are git-ignored.
 
 Unit tests for recipe data and title search live in
 `src/search_test.odin` and `src/db_test.odin`, and for network
-JSON import parsing and fetching in `src/json_import_test.odin`
+JSON import parsing and fetching, plus raw-file import from
+disk, in `src/json_import_test.odin`
 (`@(test)` procedures, run with the Odin test runner):
 
 ```sh

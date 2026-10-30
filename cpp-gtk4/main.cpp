@@ -41,9 +41,10 @@ struct App {
     GtkWidget* window = nullptr;
     GtkWidget* list_box = nullptr;
     GtkWidget* search_entry = nullptr;
-    // URL import widgets (left pane, below the Add button).
+    // URL/file import widgets (left pane, below the Add button).
     GtkWidget* import_url_entry = nullptr;
     GtkWidget* import_button = nullptr;
+    GtkWidget* import_file_button = nullptr;
     GtkWidget* import_status_label = nullptr;
     GtkWidget* import_spinner = nullptr;
     bool import_in_flight = false;
@@ -188,6 +189,9 @@ void on_edit_clicked(GtkButton* button, gpointer data);
 void on_delete_clicked(GtkButton* button, gpointer data);
 void on_import_clicked(GtkButton* button, gpointer data);
 void on_json_import_clicked(GtkButton* button, gpointer data);
+void on_json_import_file_clicked(GtkButton* button, gpointer data);
+void on_json_import_file_chosen(GObject* source, GAsyncResult* result,
+                               gpointer data);
 
 // --- Image loading (worker thread + main-thread idle callback) ---
 
@@ -927,11 +931,17 @@ void on_import_clicked(GtkButton* /*button*/, gpointer data) {
 // window is open: that window is modal and transient for the
 // main window, so the main window cannot be clicked at all
 // while it is up, which is the GTK equivalent of rust-egui's
-// "disabled while editing".
+// "disabled while editing". The "Import from file…" button
+// shares this whole path (see below): only the thread's source
+// differs, file read instead of URL fetch.
 
 struct ImportJob {
     App* app;
     std::string url;
+    // File import: when from_file is set, the thread reads this
+    // path with import_from_file instead of fetching the URL.
+    std::string file_path;
+    bool from_file = false;
     std::vector<ImportedRecipe> recipes;
     std::string error;
     bool ok = false;
@@ -960,6 +970,7 @@ gboolean on_import_finished(gpointer data) {
     if (app->alive) {
         app->import_in_flight = false;
         gtk_widget_set_sensitive(app->import_button, TRUE);
+        gtk_widget_set_sensitive(app->import_file_button, TRUE);
         gtk_widget_set_visible(app->import_spinner, FALSE);
         gtk_spinner_stop(GTK_SPINNER(app->import_spinner));
         if (!job->ok) {
@@ -1031,22 +1042,25 @@ gboolean on_import_finished(gpointer data) {
 
 gpointer import_thread(gpointer data) {
     ImportJob* job = static_cast<ImportJob*>(data);
-    job->ok = fetch_and_parse(job->url, job->recipes, job->error);
+    if (job->from_file) {
+        job->ok = import_from_file(job->file_path, job->recipes,
+                                   job->error);
+    } else {
+        job->ok = fetch_and_parse(job->url, job->recipes, job->error);
+    }
     g_idle_add(on_import_finished, job);
     return nullptr;
 }
 
-void on_json_import_clicked(GtkButton* /*button*/, gpointer data) {
-    App* app = static_cast<App*>(data);
-    if (app->import_in_flight) {
-        return;
-    }
-    const char* text =
-        gtk_editable_get_text(GTK_EDITABLE(app->import_url_entry));
-    ImportJob* job = new ImportJob{app, text != nullptr ? text : "",
-                                   {}, "", false};
+// Shared start path for the URL and file imports: both buttons
+// go insensitive and the spinner shows while an import is in
+// flight, and both routes land in on_import_finished with the
+// same status/error display. Reading and parsing never block
+// the UI.
+void begin_import(App* app, ImportJob* job) {
     app->import_in_flight = true;
     gtk_widget_set_sensitive(app->import_button, FALSE);
+    gtk_widget_set_sensitive(app->import_file_button, FALSE);
     gtk_widget_set_visible(app->import_spinner, TRUE);
     gtk_spinner_start(GTK_SPINNER(app->import_spinner));
     set_import_status(app, "Importing…", false);
@@ -1060,12 +1074,82 @@ void on_json_import_clicked(GtkButton* /*button*/, gpointer data) {
         delete job;
         app->import_in_flight = false;
         gtk_widget_set_sensitive(app->import_button, TRUE);
+        gtk_widget_set_sensitive(app->import_file_button, TRUE);
         gtk_widget_set_visible(app->import_spinner, FALSE);
         gtk_spinner_stop(GTK_SPINNER(app->import_spinner));
         set_import_status(app, "Could not start import thread.", true);
         return;
     }
     g_thread_unref(thread);
+}
+
+void on_json_import_clicked(GtkButton* /*button*/, gpointer data) {
+    App* app = static_cast<App*>(data);
+    if (app->import_in_flight) {
+        return;
+    }
+    const char* text =
+        gtk_editable_get_text(GTK_EDITABLE(app->import_url_entry));
+    ImportJob* job = new ImportJob{};
+    job->app = app;
+    job->url = text != nullptr ? text : "";
+    begin_import(app, job);
+}
+
+// --- Raw-file JSON import ---
+//
+// Same worker-thread + idle-callback path as the URL import,
+// but the job reads a local file with import_from_file instead
+// of fetching a URL. The file dialog is the same GtkFileDialog
+// pattern the image import uses, with a JSON filter. Like the
+// URL Import button, this button is not separately hidden
+// while an add/edit window is open: that window is modal and
+// transient for the main window, so the main window cannot be
+// clicked at all while it is up, which is the GTK equivalent
+// of rust-egui's "shown only when not editing". It goes
+// insensitive while an import is in flight, via begin_import.
+
+void on_json_import_file_chosen(GObject* source, GAsyncResult* result,
+                               gpointer data) {
+    App* app = static_cast<App*>(data);
+    GtkFileDialog* dialog = GTK_FILE_DIALOG(source);
+    GError* error = nullptr;
+    GFile* file = gtk_file_dialog_open_finish(dialog, result, &error);
+    if (error != nullptr) {
+        g_error_free(error);
+    }
+    if (file == nullptr) {
+        g_object_unref(dialog);
+        return;
+    }
+    char* path = g_file_get_path(file);
+    if (path != nullptr) {
+        ImportJob* job = new ImportJob{};
+        job->app = app;
+        job->file_path = path;
+        job->from_file = true;
+        begin_import(app, job);
+        g_free(path);
+    }
+    g_object_unref(file);
+    g_object_unref(dialog);
+}
+
+void on_json_import_file_clicked(GtkButton* /*button*/,
+                                 gpointer data) {
+    App* app = static_cast<App*>(data);
+    if (app->import_in_flight) {
+        return;
+    }
+    GtkFileDialog* dialog = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dialog, "Import recipes from file");
+    GtkFileFilter* filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, "JSON files");
+    gtk_file_filter_add_mime_type(filter, "application/json");
+    gtk_file_filter_add_pattern(filter, "*.json");
+    gtk_file_dialog_set_default_filter(dialog, filter);
+    gtk_file_dialog_open(dialog, GTK_WINDOW(app->window), nullptr,
+                         on_json_import_file_chosen, app);
 }
 
 }  // namespace
@@ -1122,9 +1206,10 @@ void on_activate(GtkApplication* gtk_app, gpointer /*data*/) {
     g_signal_connect(add_button, "clicked", G_CALLBACK(on_add_clicked), &app);
     gtk_box_append(GTK_BOX(left), add_button);
 
-    // URL JSON import: a URL field, an Import button, a spinner
-    // while an import is in flight, and a status label for the
-    // "Imported N recipe(s)." / error message.
+    // URL/file JSON import: a URL field, an Import button, an
+    // "Import from file…" button, a spinner while an import is
+    // in flight, and a status label for the "Imported N
+    // recipe(s)." / error message.
     gtk_box_append(GTK_BOX(left), make_label("Import from URL:", false));
     app.import_url_entry = gtk_entry_new();
     gtk_editable_set_text(GTK_EDITABLE(app.import_url_entry),
@@ -1135,6 +1220,11 @@ void on_activate(GtkApplication* gtk_app, gpointer /*data*/) {
     g_signal_connect(app.import_button, "clicked",
                      G_CALLBACK(on_json_import_clicked), &app);
     gtk_box_append(GTK_BOX(import_row), app.import_button);
+    app.import_file_button =
+        gtk_button_new_with_label("Import from file…");
+    g_signal_connect(app.import_file_button, "clicked",
+                     G_CALLBACK(on_json_import_file_clicked), &app);
+    gtk_box_append(GTK_BOX(import_row), app.import_file_button);
     app.import_spinner = gtk_spinner_new();
     gtk_widget_set_visible(app.import_spinner, FALSE);
     gtk_box_append(GTK_BOX(import_row), app.import_spinner);

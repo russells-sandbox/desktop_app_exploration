@@ -64,3 +64,16 @@ bool fetch_url(const std::string& url, std::string& body, std::string& error);
 // runs, so a slow server or a large document never blocks the UI.
 bool fetch_and_parse(const std::string& url, std::vector<Recipe>& recipes,
                      std::string& error);
+
+// Reads a whole file as UTF-8 text and parses it with
+// parse_recipes (same shapes, defaults, and error cases).
+// Deliberately UTF-8 only: a file that is not valid UTF-8 is
+// an error, because encoding detection (UTF-16, Windows-1252,
+// Shift_JIS) is a separate todo item, not this one. On a read
+// failure the error reads "Could not read file <path>: <reason>",
+// matching rust-egui's import_from_file; a parse failure goes
+// through parse_recipes' "Could not parse recipe JSON" path.
+// This is what the worker thread runs for a file import, so
+// reading and parsing never block the UI.
+bool import_from_file(const std::string& path, std::vector<Recipe>& recipes,
+                      std::string& error);

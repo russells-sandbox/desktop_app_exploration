@@ -7,9 +7,11 @@
 // anything, and this VM has none of them installed, so a native
 // dialog would silently fall back to terminal input and be
 // unusable from the GUI. This picker needs no helper: it lists
-// directories and image files, navigates with mouse clicks, and
-// works under Xvfb. It is only used for choosing a recipe image,
-// so it filters to image extensions.
+// directories and files, navigates with mouse clicks, and works
+// under Xvfb. It is used for choosing a recipe image (image
+// files only) and for choosing a recipe JSON file to import
+// (JSON files only); the filter is picked when the picker is
+// opened.
 //
 // Usage: call open() to show it, then draw() every frame while it
 // is open. draw() returns true exactly once, on the frame the user
@@ -27,7 +29,9 @@ namespace fs = std::filesystem;
 
 class FilePicker {
 public:
-    void open() {
+    enum class FileFilter { Images, Json };
+
+    void open(FileFilter filter = FileFilter::Images) {
         std::error_code ec;
         current_dir_ = fs::current_path(ec).string();
         if (ec || current_dir_.empty()) {
@@ -36,7 +40,12 @@ public:
         selected_.clear();
         confirmed_ = false;
         show_ = true;
-        ImGui::OpenPopup("Choose image");
+        filter_ = filter;
+        // The popup title is also its id, so the image and JSON
+        // pickers are distinct popups even though only one is
+        // ever open at a time.
+        title_ = filter == FileFilter::Json ? "Choose JSON file" : "Choose image";
+        ImGui::OpenPopup(title_.c_str());
     }
 
     bool is_open() const { return show_; }
@@ -47,7 +56,7 @@ public:
     // confirms a file (Select button or double-click on a file).
     bool draw() {
         bool confirmed_this_frame = false;
-        if (ImGui::BeginPopupModal("Choose image", nullptr,
+        if (ImGui::BeginPopupModal(title_.c_str(), nullptr,
                                    ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::Text("Folder: %s", current_dir_.c_str());
             ImGui::Separator();
@@ -74,7 +83,7 @@ public:
                 }
                 if (is_dir) {
                     entries.push_back({name, item.path().string(), true});
-                } else if (is_image_file(name)) {
+                } else if (is_visible_file(name)) {
                     entries.push_back({name, item.path().string(), false});
                 }
             }
@@ -144,8 +153,17 @@ private:
                ext == ".webp" || ext == ".gif" || ext == ".bmp";
     }
 
+    bool is_visible_file(const std::string& name) const {
+        if (filter_ == FileFilter::Json) {
+            return lower(fs::path(name).extension().string()) == ".json";
+        }
+        return is_image_file(name);
+    }
+
     std::string current_dir_;
     std::string selected_;
     bool confirmed_ = false;
     bool show_ = false;
+    FileFilter filter_ = FileFilter::Images;
+    std::string title_ = "Choose image";
 };

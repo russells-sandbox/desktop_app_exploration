@@ -73,17 +73,30 @@ search_edit: bool
 // inserts itself, so importing never blocks the UI.
 import_url_buf: [512]byte
 import_url_edit: bool
+
+// ---- Raw-file JSON import ----
+
+// raylib has no file picker dialog, so like the image
+// import in the edit form, the file path comes from a
+// text field: type (or paste) a path, click "Import from
+// file...", and the file goes through the same
+// worker-thread + poll path and the same message/error
+// display as the URL import.
+import_file_buf: [512]byte
+import_file_edit: bool
 import_job: ^Import_Job
 import_message: string
 import_error: string
 
 Import_Job :: struct {
-	url:     string,
-	mutex:   sync.Mutex,
-	done:    bool,
-	recipes: []Recipe,
-	err:     string,
-	thread:  ^thread.Thread,
+	url:       string,
+	from_file: bool,
+	file_path: string,
+	mutex:     sync.Mutex,
+	done:      bool,
+	recipes:   []Recipe,
+	err:       string,
+	thread:    ^thread.Thread,
 }
 
 list_scroll: rl.Vector2
@@ -365,8 +378,9 @@ reload_recipes :: proc() {
 
 // ---- Network JSON import: worker thread + poll ----
 
-// Runs on the worker thread: fetch and parse only. The
-// error string is cloned off this thread's temp allocator
+// Runs on the worker thread: fetch and parse only, or
+// read and parse a file for a file import. The error
+// string is cloned off this thread's temp allocator
 // before storing it — fetch errors are built with tprintf
 // on this thread, and the main thread reads job.err after
 // this thread has returned, so a temp string would be
@@ -374,7 +388,13 @@ reload_recipes :: proc() {
 // already heap-cloned by parse_recipes, and the job itself
 // is heap-allocated, so both survive the thread.)
 import_thread :: proc(job: ^Import_Job) {
-	recipes, err := fetch_and_parse(job.url)
+	recipes: []Recipe
+	err: string
+	if job.from_file {
+		recipes, err = import_from_file(job.file_path)
+	} else {
+		recipes, err = fetch_and_parse(job.url)
+	}
 	sync.mutex_lock(&job.mutex)
 	job.recipes = recipes
 	if err != "" {
@@ -398,6 +418,27 @@ start_import :: proc() {
 	import_error = ""
 	job := new(Import_Job)
 	job.url = strings.clone(strings.trim_space(buf_str(import_url_buf[:])))
+	import_job = job
+	job.thread = thread.create_and_start_with_poly_data(job, import_thread)
+}
+
+// The file-import twin of start_import: same guards, same
+// cleared status, same worker-thread + poll path — only
+// the job carries a file path instead of a URL, and the
+// worker reads and parses the file instead of fetching.
+start_file_import :: proc() {
+	if import_job != nil || db_conn == nil {
+		if db_conn == nil {
+			import_error = "Cannot import: no database is open."
+			import_message = ""
+		}
+		return
+	}
+	import_message = ""
+	import_error = ""
+	job := new(Import_Job)
+	job.from_file = true
+	job.file_path = strings.clone(strings.trim_space(buf_str(import_file_buf[:])))
 	import_job = job
 	job.thread = thread.create_and_start_with_poly_data(job, import_thread)
 }
@@ -799,7 +840,25 @@ main :: proc() {
 		} else if rl.GuiButton({20, 170, 260, 30}, "Import") && mode != .Editing {
 			start_import()
 		}
-		status_y: f32 = 208
+
+		// File import, like the Rust version's "Import from
+		// file..." button beside the URL Import button — but
+		// raylib has no file dialog, so the path comes from
+		// a text field (the image-import pattern) and the
+		// button sits below the URL row instead of beside
+		// it. The button is shown only when not editing and
+		// no import is in flight; while importing, the
+		// spinner above covers both import kinds. The label
+		// uses three ASCII dots, not an ellipsis: raygui's
+		// default font renders "…" as "?" (see README).
+		rl.GuiLabel({20, 208, 260, 20}, "Import from file:")
+		text_field({20, 230, 260, 30}, import_file_buf[:], &import_file_edit)
+		if import_job == nil && mode != .Editing {
+			if rl.GuiButton({20, 268, 260, 30}, "Import from file...") {
+				start_file_import()
+			}
+		}
+		status_y: f32 = 306
 		if import_message != "" {
 			draw_text(20, status_y, FONT_BODY, rl.DARKGRAY, import_message)
 			status_y += f32(FONT_BODY + LINE_GAP)

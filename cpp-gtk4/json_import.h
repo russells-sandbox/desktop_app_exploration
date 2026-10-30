@@ -1,7 +1,10 @@
 #pragma once
 
-// Network JSON import for the recipe manager: fetch a recipe
-// document from a URL and parse it into recipes.
+// JSON import for the recipe manager: fetch a recipe document
+// from a URL, or read one from a local file, and parse it into
+// recipes. Both routes share parse_recipes, so the file route
+// accepts exactly the same document shapes and field defaults
+// as the URL route.
 //
 // This mirrors rust-egui's json_import.rs in behaviour, with no
 // new dependencies: fetching is plain POSIX sockets (http://
@@ -78,3 +81,13 @@ bool fetch_url(const std::string& url, std::string& body,
 bool fetch_and_parse(const std::string& url,
                      std::vector<ImportedRecipe>& out,
                      std::string& error);
+
+// Read a whole file as UTF-8 text and parse it, exactly as
+// rust-egui's import_from_file does. A file that cannot be read
+// is an error of the form "Could not read file {path}: {err}";
+// a non-UTF-8 file is a parse error (parse_recipes validates
+// UTF-8), because encoding detection (UTF-16, Windows-1252,
+// Shift_JIS) is a separate todo item, not this one.
+bool import_from_file(const std::string& path,
+                      std::vector<ImportedRecipe>& out,
+                      std::string& error);

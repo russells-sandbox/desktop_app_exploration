@@ -14,7 +14,9 @@
 // worker thread, spinner while loading, error state on failure),
 // and network JSON import from a URL (fetch and parse on a
 // worker thread, spinner while in flight, success/error message
-// in the list pane).
+// in the list pane), and raw-file JSON import (a file picker
+// for a .json file, read and parse on a worker thread through
+// the same import path as the URL import).
 //
 // Notes on the Dear ImGui default font: it does not render the
 // bullet character, so ingredients use BulletText (which draws a
@@ -243,6 +245,11 @@ int main(int, char**) {
     // popup must be opened from the main window (see below), not
     // from inside the detail child where the button lives.
     bool open_picker = false;
+    // Same pattern for raw-file import: set when "Import from
+    // file..." is clicked in the list pane, and the JSON picker
+    // is opened from the main window below.
+    FilePicker import_picker;
+    bool open_import_picker = false;
 
     // List/detail transition state: which recipe the current fade
     // is for, and the time it started at. Dear ImGui has no
@@ -277,8 +284,8 @@ int main(int, char**) {
             }
         }
 
-        // Collect a finished URL import, if any, without
-        // blocking: the worker thread already fetched and
+        // Collect a finished import (URL or file), if any, without
+        // blocking: the worker thread already fetched/read and
         // parsed, so this step is just the database inserts,
         // using the same insert_recipe the Add form uses. A
         // failed insert stops the import, leaving any recipes
@@ -408,6 +415,17 @@ int main(int, char**) {
                     job->recipes = std::move(recipes);
                     job->error = std::move(error);
                 }).detach();
+            }
+            ImGui::SameLine();
+            // Raw-file import, as in rust-egui: the picker only
+            // selects the file; reading and parsing run on a
+            // worker thread through the same ImportJob poll path
+            // as the URL import, so they never block the UI.
+            // Shown only when not editing (this whole block is
+            // disabled while editing) and not already importing
+            // (this branch only draws when import_job is null).
+            if (ImGui::Button("Import from file...")) {
+                open_import_picker = true;
             }
             if (import_disabled) {
                 ImGui::EndDisabled();
@@ -738,6 +756,35 @@ int main(int, char**) {
                     draft.image_path = imported;
                     form_error.clear();
                 }
+            }
+        }
+
+        // Raw-file import picker, same main-window rule as the
+        // image picker above. On confirmation the chosen file is
+        // read and parsed on a worker thread, and the poll at the
+        // top of the frame collects the result exactly as for a
+        // URL import (same inserts, same messages and errors).
+        if (open_import_picker) {
+            import_picker.open(FilePicker::FileFilter::Json);
+            open_import_picker = false;
+        }
+        if (import_picker.is_open()) {
+            if (import_picker.draw()) {
+                import_message.clear();
+                import_error.clear();
+                auto job = std::make_shared<ImportJob>();
+                import_job = job;
+                std::string path = import_picker.selected();
+                std::thread([job, path]() {
+                    std::vector<Recipe> recipes;
+                    std::string error;
+                    bool ok = import_from_file(path, recipes, error);
+                    std::lock_guard<std::mutex> lock(job->mutex);
+                    job->done = true;
+                    job->ok = ok;
+                    job->recipes = std::move(recipes);
+                    job->error = std::move(error);
+                }).detach();
             }
         }
 

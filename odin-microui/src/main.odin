@@ -301,6 +301,12 @@ main :: proc() {
 	import_url_buf: [512]u8
 	import_url_len := 0
 	buf_set(import_url_buf[:], &import_url_len, "http://localhost:8000/recipes.json")
+	// Raw-file import path field, beside the URL field: like
+	// the image import in the edit form, this stack takes a
+	// typed path — raylib has no file picker (see
+	// images.odin) — rather than a dialog.
+	import_file_buf: [512]u8
+	import_file_len := 0
 	import_thread: ^thread.Thread
 	import_job: ^Import_Job
 	import_message := ""
@@ -525,6 +531,39 @@ main :: proc() {
 			}
 			if import_error != "" {
 				mu.label(ctx, import_error)
+			}
+			// Raw-file JSON import (see import_from_file in
+			// json_import.odin), like the Rust version's
+			// "Import from file…" button: the same shapes,
+			// defaults, worker-thread + poll path, and
+			// message/error display as the URL import, so
+			// reading and parsing never block the UI. The
+			// path is typed, not picked: raylib has no file
+			// picker, and this is the pattern the image
+			// import already uses. The button is shown only
+			// when not editing and no import is in flight;
+			// an empty path does nothing, like a cancelled
+			// dialog in the Rust version.
+			mu.label(ctx, "Import from file:")
+			mu.textbox(ctx, import_file_buf[:], &import_file_len)
+			if import_thread == nil && !editing {
+				if res := mu.button(ctx, "Import from file", .NONE, {}); .SUBMIT in res {
+					path := strings.trim_space(buf_str(import_file_buf[:], import_file_len))
+					if path != "" {
+						if import_message != "" {
+							delete(import_message)
+						}
+						if import_error != "" {
+							delete(import_error)
+						}
+						import_message = ""
+						import_error = ""
+						job := new(Import_Job)
+						job.path = strings.clone(path)
+						import_job = job
+						import_thread = thread.create_and_start_with_poly_data(job, import_job_proc)
+					}
+				}
 			}
 			for recipe in recipes {
 				if !matches_search(recipe.title, query) {

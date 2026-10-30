@@ -133,6 +133,7 @@ enum Message {
     DraftStepChanged(usize, String),
     ImportUrlChanged(String),
     ImportClicked,
+    ImportFileClicked,
     AddIngredientClicked,
     RemoveIngredientClicked(usize),
     AddStepClicked,
@@ -586,6 +587,28 @@ impl RecipeManager {
                     self.import_error = None;
                 }
             }
+            Message::ImportFileClicked => {
+                // Raw-file import: same shapes, defaults, and
+                // message/error display as the URL import, and the
+                // same worker-thread + poll_imports path, so
+                // reading and parsing never block the UI. The file
+                // dialog is the same rfd pattern the image
+                // chooser uses.
+                if !self.editing() && self.pending_import.is_none() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("JSON", &["json"])
+                        .pick_file()
+                    {
+                        let (sender, receiver) = channel();
+                        std::thread::spawn(move || {
+                            let _ = sender.send(json_import::import_from_file(&path));
+                        });
+                        self.pending_import = Some(receiver);
+                        self.import_message = None;
+                        self.import_error = None;
+                    }
+                }
+            }
             Message::Tick => {
                 self.spinner_frame = self.spinner_frame.wrapping_add(1);
                 self.poll_image_loads();
@@ -630,8 +653,9 @@ impl RecipeManager {
         .spacing(8.0);
         // URL import, below the Add button and above the list:
         // a URL field (defaulting to the local test-data server),
-        // an Import button, a loading indicator while in flight,
-        // and the last success or error message.
+        // an Import button, an "Import from file…" button, a
+        // loading indicator while in flight, and the last success
+        // or error message.
         list = list.push(text("Import from URL:").size(14.0));
         list = list.push(
             text_input("http://localhost:8000/recipes.json", &self.import_url)
@@ -653,6 +677,13 @@ impl RecipeManager {
             } else {
                 Some(Message::ImportClicked)
             }));
+            list = list.push(button("Import from file…").on_press_maybe(
+                if editing {
+                    None
+                } else {
+                    Some(Message::ImportFileClicked)
+                },
+            ));
         }
         if let Some(message) = &self.import_message {
             list = list.push(text(message.as_str()));

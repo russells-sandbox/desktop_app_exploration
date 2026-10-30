@@ -13,7 +13,9 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -978,4 +980,23 @@ bool fetch_and_parse(const std::string& url,
         return false;
     }
     return parse_recipes(body, out, error);
+}
+
+bool import_from_file(const std::string& path,
+                      std::vector<ImportedRecipe>& out,
+                      std::string& error) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        error = "Could not read file " + path + ": " +
+                std::strerror(errno);
+        return false;
+    }
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    if (file.bad()) {
+        error = "Could not read file " + path + ": " +
+                std::strerror(errno);
+        return false;
+    }
+    return parse_recipes(contents.str(), out, error);
 }

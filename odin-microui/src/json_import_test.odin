@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:net"
+import "core:os"
 import "core:strings"
 import "core:testing"
 import "core:thread"
@@ -353,4 +354,226 @@ test_json_import_fetch_non_200_is_an_error :: proc(t: ^testing.T) {
 	testing.expect(t, err != "", "a 404 must be an error")
 	// The error names the status, like the Rust version's.
 	testing.expect(t, strings.contains(err, "404"), fmt.tprintf("error was: %s", err))
+}
+
+// --- Raw-file import tests (src/json_import.odin) ---------------------
+// Mirrors rust-egui's five import_from_file tests: the file is
+// read from disk and parsed with the same parser the URL
+// importer uses, so the path itself is exercised end to end.
+// Temp files live in /tmp like the db tests' throwaway
+// databases, and each test removes its file when it finishes.
+
+write_import_temp_file :: proc(t: ^testing.T, tag: string, contents: string) -> string {
+	path := strings.concatenate({"/tmp/odin-microui-test-import-", tag, ".json"})
+	write_err := os.write_entire_file(path, contents)
+	testing.expect(t, write_err == nil, "could not write temp file")
+	return path
+}
+
+@(test)
+test_json_import_file_single_recipe :: proc(t: ^testing.T) {
+	path := write_import_temp_file(t, "single", TEST_SINGLE)
+	defer delete(path)
+	defer os.remove(path)
+	recipes, err := import_from_file(path)
+	testing.expect(t, err == "", err)
+	if err != "" {
+		return
+	}
+	defer free_imported_recipes(recipes)
+	testing.expect_value(t, len(recipes), 1)
+	if len(recipes) == 1 {
+		testing.expect_value(t, recipes[0].title, "Mushroom Risotto")
+	}
+}
+
+@(test)
+test_json_import_file_collection :: proc(t: ^testing.T) {
+	doc := strings.concatenate({`{"recipes": [`, TEST_SINGLE, `, `, TEST_SINGLE, `]}`})
+	defer delete(doc)
+	path := write_import_temp_file(t, "collection", doc)
+	defer delete(path)
+	defer os.remove(path)
+	recipes, err := import_from_file(path)
+	testing.expect(t, err == "", err)
+	if err != "" {
+		return
+	}
+	defer free_imported_recipes(recipes)
+	testing.expect_value(t, len(recipes), 2)
+}
+
+@(test)
+test_json_import_file_bare_array_and_empty :: proc(t: ^testing.T) {
+	doc := strings.concatenate({`[`, TEST_SINGLE, `]`})
+	defer delete(doc)
+	path := write_import_temp_file(t, "array", doc)
+	defer delete(path)
+	defer os.remove(path)
+	recipes, err := import_from_file(path)
+	testing.expect(t, err == "", err)
+	if err != "" {
+		return
+	}
+	defer free_imported_recipes(recipes)
+	testing.expect_value(t, len(recipes), 1)
+
+	empty_path := write_import_temp_file(t, "empty", `{"recipes": []}`)
+	defer delete(empty_path)
+	defer os.remove(empty_path)
+	empty_recipes, empty_err := import_from_file(empty_path)
+	testing.expect(t, empty_err == "", empty_err)
+	if empty_err != "" {
+		return
+	}
+	defer free_imported_recipes(empty_recipes)
+	testing.expect_value(t, len(empty_recipes), 0)
+}
+
+@(test)
+test_json_import_file_invalid_and_missing :: proc(t: ^testing.T) {
+	path := write_import_temp_file(t, "invalid", "{ this is not json")
+	defer delete(path)
+	defer os.remove(path)
+	_, err := import_from_file(path)
+	testing.expect(t, err != "", "invalid JSON must be an error")
+	testing.expect(t, strings.contains(err, "Could not parse recipe JSON"), err)
+
+	missing := "/tmp/odin-microui-test-import-missing.json"
+	os.remove(missing)
+	_, err = import_from_file(missing)
+	testing.expect(t, err != "", "a missing file must be an error")
+	testing.expect(t, strings.contains(err, "Could not read file"), err)
+}
+
+@(test)
+test_json_import_file_non_utf8_is_a_read_error :: proc(t: ^testing.T) {
+	// UTF-8 only, like the Rust version's read_to_string: a
+	// non-UTF-8 file errors as a read failure, never as
+	// garbled recipes. Encoding detection is the separate
+	// text-encoding item.
+	// Written as raw bytes, not a string: a string literal
+	// cannot hold these byte values portably.
+	path := strings.concatenate({"/tmp/odin-microui-test-import-", "nonutf8", ".json"})
+	write_err := os.write_entire_file(path, []byte{0x7b, 0xff, 0xfe, 0x7d})
+	testing.expect(t, write_err == nil, "could not write temp file")
+	defer delete(path)
+	defer os.remove(path)
+	_, err := import_from_file(path)
+	testing.expect(t, err != "", "a non-UTF-8 file must be an error")
+	testing.expect(t, strings.contains(err, "Could not read file"), err)
+}
+
+// The shared test-data fixtures, read from disk. odin test
+// runs with the working directory of the invocation: the stack
+// directory (odin-microui/) when run as `odin test src` (the
+// README command), the repo root, or the src directory, so
+// all three layouts are tried.
+find_test_data_dir :: proc(t: ^testing.T) -> string {
+	candidates := []string{"../test-data/", "test-data/", "../../test-data/"}
+	for candidate in candidates {
+		probe := strings.concatenate({candidate, "recipe-single.json"})
+		defer delete(probe)
+		if os.exists(probe) {
+			return candidate
+		}
+	}
+	testing.fail(t)
+	return ""
+}
+
+@(test)
+test_json_import_file_shared_fixtures :: proc(t: ^testing.T) {
+	dir := find_test_data_dir(t)
+	if dir == "" {
+		return
+	}
+	fixture :: proc(dir, name: string) -> string {
+		return strings.concatenate({dir, name})
+	}
+
+	single_path := fixture(dir, "recipe-single.json")
+	defer delete(single_path)
+	recipes, err := import_from_file(single_path)
+	testing.expect(t, err == "", err)
+	if err != "" {
+		return
+	}
+	defer free_imported_recipes(recipes)
+	testing.expect_value(t, len(recipes), 1)
+	if len(recipes) == 1 {
+		testing.expect_value(t, recipes[0].title, "Mushroom Risotto")
+	}
+
+	array_path := fixture(dir, "recipes-array.json")
+	defer delete(array_path)
+	recipes, err = import_from_file(array_path)
+	testing.expect(t, err == "", err)
+	if err != "" {
+		return
+	}
+	defer free_imported_recipes(recipes)
+	testing.expect_value(t, len(recipes), 2)
+	if len(recipes) == 2 {
+		testing.expect_value(t, recipes[0].title, "Pancakes")
+		testing.expect_value(t, recipes[1].title, "Greek Salad")
+	}
+
+	collection_path := fixture(dir, "recipes.json")
+	defer delete(collection_path)
+	recipes, err = import_from_file(collection_path)
+	testing.expect(t, err == "", err)
+	if err != "" {
+		return
+	}
+	defer free_imported_recipes(recipes)
+	testing.expect_value(t, len(recipes), 3)
+	if len(recipes) == 3 {
+		testing.expect_value(t, recipes[0].title, "Fried Chicken")
+		testing.expect_value(t, recipes[1].title, "Lasagna")
+		testing.expect_value(t, recipes[2].title, "Butter Tarts")
+	}
+
+	empty_fixture_path := fixture(dir, "recipes-empty.json")
+	defer delete(empty_fixture_path)
+	recipes, err = import_from_file(empty_fixture_path)
+	testing.expect(t, err == "", err)
+	if err != "" {
+		return
+	}
+	defer free_imported_recipes(recipes)
+	testing.expect_value(t, len(recipes), 0)
+
+	invalid_path := fixture(dir, "invalid.json")
+	defer delete(invalid_path)
+	_, err = import_from_file(invalid_path)
+	testing.expect(t, err != "", "invalid.json must be an error")
+	testing.expect(t, strings.contains(err, "Could not parse recipe JSON"), err)
+}
+
+// The file-import worker branch: the same thread procedure
+// main starts for a file job must read and parse the file,
+// so a file import through the GUI's worker-thread + poll
+// path works, not just the direct import_from_file call.
+@(test)
+test_json_import_file_worker_thread :: proc(t: ^testing.T) {
+	path := write_import_temp_file(t, "worker", TEST_SINGLE)
+	defer delete(path)
+	defer os.remove(path)
+	job := new(Import_Job)
+	defer free(job)
+	job.path = strings.clone(path)
+	defer delete(job.path)
+	worker := thread.create_and_start_with_poly_data(job, import_job_proc)
+	thread.join(worker)
+	thread.destroy(worker)
+	testing.expect(t, job.err == "", job.err)
+	if job.err != "" {
+		return
+	}
+	defer free_imported_recipes(job.recipes)
+	testing.expect_value(t, len(job.recipes), 1)
+	if len(job.recipes) == 1 {
+		testing.expect_value(t, job.recipes[0].title, "Mushroom Risotto")
+	}
 }

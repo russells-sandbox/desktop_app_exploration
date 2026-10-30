@@ -67,8 +67,8 @@ has been tested on Fedora yet.
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] raw-file import: recipes as JSON, single recipe
-- [ ] raw-file import: recipes as JSON, collection
+- [X] raw-file import: recipes as JSON, single recipe
+- [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
 - [ ] raw-file export: recipes as JSON, collection
 - [ ] text encoding import: detect UTF-8 (with and without BOM), UTF-16LE/BE (with BOM), Windows-1252, and Shift_JIS in imported recipe JSON, parse it, and store equivalent UTF-8 in SQLite
@@ -105,8 +105,8 @@ has been tested on Fedora yet.
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] raw-file import: recipes as JSON, single recipe
-- [ ] raw-file import: recipes as JSON, collection
+- [X] raw-file import: recipes as JSON, single recipe
+- [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
 - [ ] raw-file export: recipes as JSON, collection
 - [ ] text encoding import: detect UTF-8 (with and without BOM), UTF-16LE/BE (with BOM), Windows-1252, and Shift_JIS in imported recipe JSON, parse it, and store equivalent UTF-8 in SQLite
@@ -143,8 +143,8 @@ has been tested on Fedora yet.
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] raw-file import: recipes as JSON, single recipe
-- [ ] raw-file import: recipes as JSON, collection
+- [X] raw-file import: recipes as JSON, single recipe
+- [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
 - [ ] raw-file export: recipes as JSON, collection
 - [ ] text encoding import: detect UTF-8 (with and without BOM), UTF-16LE/BE (with BOM), Windows-1252, and Shift_JIS in imported recipe JSON, parse it, and store equivalent UTF-8 in SQLite
@@ -181,8 +181,8 @@ has been tested on Fedora yet.
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] raw-file import: recipes as JSON, single recipe
-- [ ] raw-file import: recipes as JSON, collection
+- [X] raw-file import: recipes as JSON, single recipe
+- [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
 - [ ] raw-file export: recipes as JSON, collection
 - [ ] text encoding import: detect UTF-8 (with and without BOM), UTF-16LE/BE (with BOM), Windows-1252, and Shift_JIS in imported recipe JSON, parse it, and store equivalent UTF-8 in SQLite
@@ -219,8 +219,8 @@ has been tested on Fedora yet.
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] raw-file import: recipes as JSON, single recipe
-- [ ] raw-file import: recipes as JSON, collection
+- [X] raw-file import: recipes as JSON, single recipe
+- [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
 - [ ] raw-file export: recipes as JSON, collection
 - [ ] text encoding import: detect UTF-8 (with and without BOM), UTF-16LE/BE (with BOM), Windows-1252, and Shift_JIS in imported recipe JSON, parse it, and store equivalent UTF-8 in SQLite
@@ -257,8 +257,8 @@ has been tested on Fedora yet.
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
 - [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] raw-file import: recipes as JSON, single recipe
-- [ ] raw-file import: recipes as JSON, collection
+- [X] raw-file import: recipes as JSON, single recipe
+- [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
 - [ ] raw-file export: recipes as JSON, collection
 - [ ] text encoding import: detect UTF-8 (with and without BOM), UTF-16LE/BE (with BOM), Windows-1252, and Shift_JIS in imported recipe JSON, parse it, and store equivalent UTF-8 in SQLite

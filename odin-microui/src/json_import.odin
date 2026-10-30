@@ -5,14 +5,19 @@ import "core:encoding/json"
 import "core:fmt"
 import "core:mem"
 import "core:net"
+import "core:os"
 import "core:strconv"
 import "core:strings"
 import "core:thread"
 import "core:unicode/utf8"
 
-// Network JSON import from a URL, matching rust-egui's
-// json_import.rs behaviour (see that file for the reference
-// implementation this mirrors, including its error strings).
+// Network JSON import from a URL, and raw-file JSON import
+// from a path, matching rust-egui's json_import.rs behaviour
+// (see that file for the reference implementation this
+// mirrors, including its error strings). The file importer
+// reads with import_from_file below and parses with the same
+// parse_recipes the URL importer uses, so the shapes and
+// defaults are identical; only the source differs.
 //
 // Accepted document shapes:
 //   - a single recipe object: {"title": ..., ...}
@@ -589,14 +594,43 @@ fetch_and_parse :: proc(url: string, allocator := context.allocator) -> ([]Recip
 	return parse_recipes(string(body), allocator)
 }
 
+// --- Raw-file import ---------------------------------------------------
+
+// Read a recipe document from a file and parse it with the
+// same parse_recipes the URL importer uses: the same three
+// shapes and the same defaults. Deliberately UTF-8 only, like
+// the Rust version's fs::read_to_string: JSON text is UTF-8
+// by definition, and detecting other encodings (UTF-16,
+// Windows-1252, Shift_JIS) is the separate text-encoding
+// item, not this one. A non-UTF-8 file therefore errors
+// here as a read failure, rather than importing garbled text.
+// This is what the worker thread runs, so reading and parsing
+// never block the UI.
+import_from_file :: proc(path: string, allocator := context.allocator) -> ([]Recipe, string) {
+	data, err := os.read_entire_file(path, allocator)
+	if err != nil {
+		return nil, fmt.aprintf("Could not read file %s: %v.", path, err)
+	}
+	defer delete(data, allocator)
+	if !utf8.valid_string(string(data)) {
+		return nil, fmt.aprintf("Could not read file %s: file is not valid UTF-8.", path)
+	}
+	return parse_recipes(string(data), allocator)
+}
+
 // --- Worker thread + main-thread poll -------------------------------
 
 // Shared with the import worker thread. The worker fills
 // recipes or err and returns; the main thread reads those
 // fields only after joining the thread, so there is no race
 // on them. recipes owns its strings (see the file header).
+// Exactly one source is set: url for a URL import, path for
+// a file import; the other stays "" (the zero value, never a
+// heap string), so poll/discard free only the non-empty one.
+// Both strings are heap-cloned by the main thread when set.
 Import_Job :: struct {
 	url:     string,
+	path:    string,
 	recipes: []Recipe,
 	err:     string,
 }
@@ -614,13 +648,18 @@ import_job_proc :: proc(job: ^Import_Job) {
 	arena: mem.Arena
 	mem.arena_init(&arena, arena_buf)
 	context.temp_allocator = mem.arena_allocator(&arena)
-	recipes, err := fetch_and_parse(job.url)
-	job.recipes, job.err = recipes, err
+	if job.path != "" {
+		recipes, err := import_from_file(job.path)
+		job.recipes, job.err = recipes, err
+	} else {
+		recipes, err := fetch_and_parse(job.url)
+		job.recipes, job.err = recipes, err
+	}
 }
 
-// Collect a finished URL import, if any, without blocking:
-// thread.is_done only. The worker already fetched and parsed,
-// so this step is just the database inserts, using the same
+// Collect a finished import, URL or file, if any, without
+// blocking: thread.is_done only. The worker already fetched
+// or read and parsed, so this step is just the database inserts, using the same
 // insert_recipe the Add form uses. A failed insert stops the
 // import, leaving any recipes already inserted in place, like
 // the Rust version's poll_imports. On success the first
@@ -649,7 +688,20 @@ poll_import_job :: proc(
 	j := job^
 	job^ = nil
 	defer free(j)
-	defer delete(j.url)
+	// Free the job's source string, if it set one: a URL job
+	// leaves path as the "" zero value and a file job leaves
+	// url the same way, and a zero-value string must never
+	// be passed to delete (it owns no heap memory), so only
+	// the non-empty one is freed. The old code deleted url
+	// unconditionally, which was safe only because every URL
+	// job cloned it; the length guard keeps both job kinds
+	// safe under one rule.
+	if len(j.url) > 0 {
+		delete(j.url)
+	}
+	if len(j.path) > 0 {
+		delete(j.path)
+	}
 
 	// The caller owns the previous message/error strings (all
 	// heap-allocated when non-empty, never literals — see the
@@ -732,6 +784,11 @@ discard_import_job :: proc(job_thread: ^^thread.Thread, job: ^^Import_Job) {
 	j := job^
 	job^ = nil
 	defer free(j)
-	defer delete(j.url)
+	if len(j.url) > 0 {
+		delete(j.url)
+	}
+	if len(j.path) > 0 {
+		delete(j.path)
+	}
 	free_imported_recipes(j.recipes)
 }

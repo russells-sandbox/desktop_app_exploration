@@ -3,9 +3,10 @@
 Zig + DVUI version of the recipe manager test app, a 900x600
 window titled "Recipe Manager", at feature parity with the
 Rust (egui) version through the display-animation items
-plus network JSON import: list/detail views, SQLite
+plus network JSON import and raw-file JSON import:
+list/detail views, SQLite
 storage, add/edit/delete, image display and import, both
-animations, and importing recipes from a URL.
+animations, and importing recipes from a URL or a file.
 
 DVUI's current main is tested with Zig v0.17.0, so that version
 is pinned in `install_ubuntu.sh`, `install_fedora.sh`, and in
@@ -51,8 +52,9 @@ equivalent of `install_ubuntu.sh`):
 Unit tests cover recipe data, search, and network JSON
 import (parsing, URL handling, chunked bodies, fetching
 from a local one-shot server, and inserting into a
-throwaway database) — no encoding, UI, or end-to-end
-tests:
+throwaway database) and raw-file JSON import (temp files
+and the shared test-data fixtures read from disk) — no
+encoding, UI, or end-to-end tests:
 
 ```sh
 zig build test
@@ -148,6 +150,19 @@ instead of crashing.
   handling. While the add/edit form is open the Import
   button is hidden, so a click cannot discard an
   in-progress edit.
+- Raw-file JSON import: the left pane has an "Import from
+  file" path field and an "Import from file…" button
+  beside the URL Import button. DVUI has no native file
+  picker, so the path is typed in, as in the image-import
+  row — there is no file dialog, unlike rust-egui's rfd
+  picker. The file is read and parsed on the same
+  worker-thread + poll path as a URL import, with the
+  same message and error display; the accepted shapes
+  and defaults are the same, and the file must be UTF-8
+  (encoding detection is the separate text-encoding
+  item). While importing, the spinner replaces both
+  buttons, and while the add/edit form is open both
+  buttons are hidden.
 
 ## Code
 
@@ -176,8 +191,9 @@ instead of crashing.
 - `src/images.zig` — image import: copies a file into
   `images/` with `_1`/`_2` suffixes on collision, mirroring
   `rust-egui/src/images.rs`.
-- `src/json_import.zig` — network JSON import from a URL,
-  mirroring `rust-egui/src/json_import.rs`: std.json parsing
+- `src/json_import.zig` — network JSON import from a URL
+  plus raw-file import, mirroring
+  `rust-egui/src/json_import.rs`: std.json parsing
   (shapes and defaults as above, walked by hand from a
   `std.json.Value` so a missing title is a distinct error),
   a plain std TCP http:// client via `std.Io.net` (no new

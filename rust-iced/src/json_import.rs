@@ -358,6 +358,20 @@ pub(crate) fn fetch_and_parse(url: &str) -> Result<Vec<Recipe>, String> {
     parse_recipes(&body)
 }
 
+// Import recipes from a raw file on disk: read the whole file as
+// text and parse it with the same shapes and defaults as the URL
+// importer (single object, bare array, or {"recipes": [...]}).
+// This is deliberately UTF-8 only: JSON text is UTF-8 by
+// definition, and detecting other encodings (UTF-16, Shift_JIS,
+// Windows-1252, ...) is the separate text-encoding-import item,
+// not this one. A non-UTF-8 file therefore errors here rather
+// than importing garbled text.
+pub(crate) fn import_from_file(path: &std::path::Path) -> Result<Vec<Recipe>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|err| format!("Could not read file {}: {}", path.display(), err))?;
+    parse_recipes(&text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -494,5 +508,102 @@ mod tests {
         let err = fetch_url(&format!("http://127.0.0.1:{}/missing.json", port)).unwrap_err();
         assert!(err.contains("404"), "error was: {}", err);
         handle.join().unwrap();
+    }
+
+    // Write `contents` to a fresh temp file and return its path.
+    // The caller removes it afterwards; the name includes the
+    // process id and the test's tag so parallel tests never share
+    // a file.
+    fn write_temp_file(tag: &str, contents: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "rust-iced-import-test-{}-{}.json",
+            std::process::id(),
+            tag
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn import_from_file_single_recipe() {
+        let path = write_temp_file("single", SINGLE);
+        let recipes = import_from_file(&path).unwrap();
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].title, "Mushroom Risotto");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_from_file_collection() {
+        let body = format!("{{\"recipes\": [{}, {}]}}", SINGLE, SINGLE);
+        let path = write_temp_file("collection", &body);
+        let recipes = import_from_file(&path).unwrap();
+        assert_eq!(recipes.len(), 2);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_from_file_bare_array_and_empty() {
+        let path = write_temp_file("array", &format!("[{}]", SINGLE));
+        assert_eq!(import_from_file(&path).unwrap().len(), 1);
+        let _ = std::fs::remove_file(&path);
+        let path = write_temp_file("empty", "{\"recipes\": []}");
+        assert_eq!(import_from_file(&path).unwrap().len(), 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn import_from_file_invalid_and_missing() {
+        let path = write_temp_file("invalid", "{ this is not json");
+        let Err(err) = import_from_file(&path) else {
+            panic!("expected an import error");
+        };
+        assert!(
+            err.contains("Could not parse recipe JSON"),
+            "error was: {}",
+            err
+        );
+        let _ = std::fs::remove_file(&path);
+        let missing = std::env::temp_dir().join(format!(
+            "rust-iced-import-test-{}-missing.json",
+            std::process::id()
+        ));
+        let Err(err) = import_from_file(&missing) else {
+            panic!("expected a missing-file error");
+        };
+        assert!(err.contains("Could not read file"), "error was: {}", err);
+    }
+
+    #[test]
+    fn import_from_file_shared_fixtures() {
+        // The repo's shared test-data fixtures, read from disk
+        // rather than from inline JSON, so the file path itself
+        // is exercised end to end.
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-data");
+        let recipes = import_from_file(&root.join("recipe-single.json")).unwrap();
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].title, "Mushroom Risotto");
+        let recipes = import_from_file(&root.join("recipes-array.json")).unwrap();
+        assert_eq!(
+            recipes.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            vec!["Pancakes", "Greek Salad"]
+        );
+        let recipes = import_from_file(&root.join("recipes.json")).unwrap();
+        assert_eq!(
+            recipes.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            vec!["Fried Chicken", "Lasagna", "Butter Tarts"]
+        );
+        let recipes = import_from_file(&root.join("recipes-empty.json")).unwrap();
+        assert_eq!(recipes.len(), 0);
+        let Err(err) = import_from_file(&root.join("invalid.json")) else {
+            panic!("expected an import error");
+        };
+        assert!(
+            err.contains("Could not parse recipe JSON"),
+            "error was: {}",
+            err
+        );
     }
 }

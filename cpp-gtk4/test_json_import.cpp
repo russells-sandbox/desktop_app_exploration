@@ -1,7 +1,10 @@
-// Unit tests for network JSON import (json_import.h/.cpp):
-// parsing (all shapes, defaults, empty collection, invalid JSON,
-// missing title) and fetching from a local one-shot server
-// (including a non-200 error, a chunked body, and a redirect).
+// Unit tests for JSON import (json_import.h/.cpp): parsing
+// (all shapes, defaults, empty collection, invalid JSON,
+// missing title), fetching from a local one-shot server
+// (including a non-200 error, a chunked body, and a redirect),
+// and raw-file import from temp files and the shared test-data
+// fixtures (single recipe, collection, bare array, empty
+// collection, invalid JSON, missing file, non-UTF-8 file).
 //
 // Plain checks only: no test framework, no GTK, no SQLite, so
 // this builds with plain g++ anywhere the app sources are
@@ -18,7 +21,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -119,9 +124,58 @@ std::string http_response(const std::string& body,
            std::to_string(body.size()) + "\r\n\r\n" + body;
 }
 
+// Write contents to a throwaway file under /tmp, named with
+// this process's id so parallel runs do not collide. The caller
+// removes it with std::remove.
+std::string write_temp_file(const std::string& name,
+                            const std::string& contents) {
+    std::string path = "/tmp/cpp-gtk4-import-test-" +
+                       std::to_string(getpid()) + "-" + name + ".json";
+    FILE* file = std::fopen(path.c_str(), "wb");
+    if (file == nullptr) {
+        return "";
+    }
+    std::fwrite(contents.data(), 1, contents.size(), file);
+    std::fclose(file);
+    return path;
+}
+
+bool file_ok(const std::string& path,
+             std::vector<ImportedRecipe>& recipes) {
+    std::string error;
+    bool ok = import_from_file(path, recipes, error);
+    if (!ok) {
+        std::cerr << "  (file import error was: " << error << ")\n";
+    }
+    return ok;
+}
+
+// Find the repo's shared test-data directory: an argv[1]
+// override wins, otherwise try the layouts for running from
+// the cpp-gtk4 directory, from cpp-gtk4/build, or from the
+// repo root. Empty when none of them holds recipe-single.json.
+std::string find_test_data_dir(int argc, char** argv) {
+    if (argc > 1) {
+        std::string dir = argv[1];
+        std::ifstream probe(dir + "/recipe-single.json");
+        if (probe.good()) {
+            return dir;
+        }
+    }
+    for (const char* candidate :
+         {"../test-data", "../../test-data", "test-data"}) {
+        std::ifstream probe(std::string(candidate) +
+                            "/recipe-single.json");
+        if (probe.good()) {
+            return candidate;
+        }
+    }
+    return "";
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
     std::vector<ImportedRecipe> recipes;
     std::string error;
 
@@ -314,6 +368,111 @@ int main() {
                               error),
               "redirect is followed");
         check(fetched.size() == 1, "redirect fetch recipe count");
+    }
+
+    // Raw-file import: the same parser, driven from disk.
+    // Mirrors rust-egui's five import_from_file tests.
+    {
+        std::string path = write_temp_file("single", kSingle);
+        check(!path.empty(), "temp file written for single recipe");
+        check(file_ok(path, recipes), "file single recipe imports");
+        check(recipes.size() == 1, "file single recipe count");
+        check(!recipes.empty() &&
+                  recipes[0].title == "Mushroom Risotto",
+              "file single recipe title");
+        std::remove(path.c_str());
+    }
+    {
+        std::string body =
+            std::string("{\"recipes\": [") + kSingle + ", " + kSingle +
+            "]}";
+        std::string path = write_temp_file("collection", body);
+        check(file_ok(path, recipes), "file collection imports");
+        check(recipes.size() == 2, "file collection count");
+        std::remove(path.c_str());
+    }
+    {
+        std::string path = write_temp_file(
+            "array", std::string("[") + kSingle + "]");
+        check(file_ok(path, recipes), "file bare array imports");
+        check(recipes.size() == 1, "file bare array count");
+        std::remove(path.c_str());
+        path = write_temp_file("empty", "{\"recipes\": []}");
+        check(file_ok(path, recipes), "file empty collection imports");
+        check(recipes.empty(), "file empty collection count");
+        std::remove(path.c_str());
+    }
+    {
+        std::string path =
+            write_temp_file("invalid", "{ this is not json");
+        std::vector<ImportedRecipe> bad;
+        std::string error;
+        check(!import_from_file(path, bad, error),
+              "file invalid JSON is an error");
+        check(error.find("Could not parse recipe JSON") !=
+                  std::string::npos,
+              "file invalid JSON error mentions parsing");
+        std::remove(path.c_str());
+        std::string missing = "/tmp/cpp-gtk4-import-test-" +
+                              std::to_string(getpid()) +
+                              "-missing.json";
+        check(!import_from_file(missing, bad, error),
+              "missing file is an error");
+        check(error.find("Could not read file") != std::string::npos,
+              "missing file error mentions reading");
+    }
+    {
+        // Non-UTF-8 bytes are a parse error, not a silent
+        // reinterpretation: encoding detection is a separate
+        // todo item, so the file route stays UTF-8 only.
+        std::string path = write_temp_file(
+            "nonutf8", std::string("{\"title\": \"A\xFF\"}"));
+        std::vector<ImportedRecipe> bad;
+        std::string error;
+        check(!import_from_file(path, bad, error),
+              "non-UTF-8 file is an error");
+        check(error.find("Could not parse recipe JSON") !=
+                  std::string::npos,
+              "non-UTF-8 file error mentions parsing");
+        std::remove(path.c_str());
+    }
+    {
+        // The repo's shared test-data fixtures, read from disk
+        // rather than from inline JSON, so the file path itself
+        // is exercised end to end.
+        std::string dir = find_test_data_dir(argc, argv);
+        check(!dir.empty(), "shared test-data directory found");
+        if (!dir.empty()) {
+            check(file_ok(dir + "/recipe-single.json", recipes),
+                  "fixture recipe-single.json imports");
+            check(recipes.size() == 1 &&
+                      recipes[0].title == "Mushroom Risotto",
+                  "fixture recipe-single.json content");
+            check(file_ok(dir + "/recipes-array.json", recipes),
+                  "fixture recipes-array.json imports");
+            check(recipes.size() == 2 &&
+                      recipes[0].title == "Pancakes" &&
+                      recipes[1].title == "Greek Salad",
+                  "fixture recipes-array.json content");
+            check(file_ok(dir + "/recipes.json", recipes),
+                  "fixture recipes.json imports");
+            check(recipes.size() == 3 &&
+                      recipes[0].title == "Fried Chicken" &&
+                      recipes[1].title == "Lasagna" &&
+                      recipes[2].title == "Butter Tarts",
+                  "fixture recipes.json content");
+            check(file_ok(dir + "/recipes-empty.json", recipes),
+                  "fixture recipes-empty.json imports");
+            check(recipes.empty(),
+                  "fixture recipes-empty.json is empty");
+            std::vector<ImportedRecipe> bad;
+            std::string error;
+            check(!import_from_file(dir + "/invalid.json", bad, error),
+                  "fixture invalid.json is an error");
+            check(error.find("Could not parse recipe JSON") !=
+                      std::string::npos,
+                  "fixture invalid.json error mentions parsing");
+        }
     }
 
     if (failures == 0) {

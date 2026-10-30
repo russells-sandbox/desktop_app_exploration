@@ -245,3 +245,119 @@ test_json_fetch_then_insert_round_trip :: proc(t: ^testing.T) {
 	testing.expect_value(t, len(loaded[3].ingredients), 1)
 	testing.expect_value(t, len(loaded[3].steps), 1)
 }
+
+// ---- Raw-file JSON import (src/json_import.odin's
+// import_from_file), mirroring rust-egui's 5 new tests:
+// single recipe and collection from temp files, bare array
+// plus the empty collection, invalid-JSON and missing-file
+// errors, and the shared fixtures in test-data/ read from
+// disk end to end. The fixture directory is found by
+// probing candidates because `odin test src` may run with
+// the stack directory or the repo root as its working
+// directory.
+
+write_temp_import_file :: proc(t: ^testing.T, name: string, content: string) -> string {
+	path := fmt.tprintf("/tmp/odin-raygui-import-test-%s.json", name)
+	werr := os.write_entire_file(path, content)
+	testing.expectf(t, werr == nil, "write_entire_file %s: %v", path, werr)
+	return path
+}
+
+@(test)
+test_file_import_single_recipe :: proc(t: ^testing.T) {
+	path := write_temp_import_file(t, "single", JSON_SINGLE)
+	defer os.remove(path)
+	recipes, err := import_from_file(path)
+	testing.expectf(t, err == "", "import_from_file: %s", err)
+	testing.expect_value(t, len(recipes), 1)
+	testing.expect_value(t, recipes[0].title, "Mushroom Risotto")
+}
+
+@(test)
+test_file_import_collection :: proc(t: ^testing.T) {
+	body := strings.concatenate({`{"recipes": [`, JSON_SINGLE, `, `, JSON_SINGLE, `]}`}, context.temp_allocator)
+	path := write_temp_import_file(t, "collection", body)
+	defer os.remove(path)
+	recipes, err := import_from_file(path)
+	testing.expectf(t, err == "", "import_from_file: %s", err)
+	testing.expect_value(t, len(recipes), 2)
+}
+
+@(test)
+test_file_import_bare_array_and_empty_collection :: proc(t: ^testing.T) {
+	array_body := strings.concatenate({`[`, JSON_SINGLE, `]`}, context.temp_allocator)
+	path := write_temp_import_file(t, "array", array_body)
+	defer os.remove(path)
+	recipes, err := import_from_file(path)
+	testing.expectf(t, err == "", "import_from_file: %s", err)
+	testing.expect_value(t, len(recipes), 1)
+
+	empty_path := write_temp_import_file(t, "empty", `{"recipes": []}`)
+	defer os.remove(empty_path)
+	recipes, err = import_from_file(empty_path)
+	testing.expectf(t, err == "", "import_from_file: %s", err)
+	testing.expect_value(t, len(recipes), 0)
+}
+
+@(test)
+test_file_import_invalid_and_missing :: proc(t: ^testing.T) {
+	path := write_temp_import_file(t, "invalid", "{ this is not json")
+	defer os.remove(path)
+	_, err := import_from_file(path)
+	testing.expect(t, err != "", "invalid JSON should be an error")
+	testing.expect(t, strings.contains(err, "Could not parse recipe JSON"), "invalid-JSON error should use the parse path, got: %s", err)
+
+	// A path that was never written: the missing-file error
+	// names the file, like the Rust version's.
+	missing := "/tmp/odin-raygui-import-test-missing.json"
+	os.remove(missing)
+	_, err = import_from_file(missing)
+	testing.expect(t, err != "", "a missing file should be an error")
+	testing.expect(t, strings.contains(err, "Could not read file"), "missing-file error should name the read failure, got: %s", err)
+}
+
+find_test_data_dir :: proc(t: ^testing.T) -> string {
+	// The probe file is recipe-single.json, present in
+	// every copy of test-data/.
+	candidates := []string{"../test-data", "test-data", "../../test-data"}
+	for candidate in candidates {
+		if os.exists(fmt.tprintf("%s/recipe-single.json", candidate)) {
+			return candidate
+		}
+	}
+	testing.expect(t, false, "test-data/ not found under ../test-data, test-data, or ../../test-data")
+	return ""
+}
+
+@(test)
+test_file_import_shared_fixtures_from_disk :: proc(t: ^testing.T) {
+	dir := find_test_data_dir(t)
+
+	recipes, err := import_from_file(fmt.tprintf("%s/recipe-single.json", dir))
+	testing.expectf(t, err == "", "recipe-single.json: %s", err)
+	testing.expect_value(t, len(recipes), 1)
+	testing.expect_value(t, recipes[0].title, "Mushroom Risotto")
+	testing.expect_value(t, len(recipes[0].ingredients), 6)
+	testing.expect_value(t, len(recipes[0].steps), 5)
+
+	recipes, err = import_from_file(fmt.tprintf("%s/recipes-array.json", dir))
+	testing.expectf(t, err == "", "recipes-array.json: %s", err)
+	testing.expect_value(t, len(recipes), 2)
+	testing.expect_value(t, recipes[0].title, "Pancakes")
+	testing.expect_value(t, recipes[1].title, "Greek Salad")
+
+	recipes, err = import_from_file(fmt.tprintf("%s/recipes.json", dir))
+	testing.expectf(t, err == "", "recipes.json: %s", err)
+	testing.expect_value(t, len(recipes), 3)
+	testing.expect_value(t, recipes[0].title, "Fried Chicken")
+	testing.expect_value(t, recipes[1].title, "Lasagna")
+	testing.expect_value(t, recipes[2].title, "Butter Tarts")
+
+	recipes, err = import_from_file(fmt.tprintf("%s/recipes-empty.json", dir))
+	testing.expectf(t, err == "", "recipes-empty.json: %s", err)
+	testing.expect_value(t, len(recipes), 0)
+
+	_, err = import_from_file(fmt.tprintf("%s/invalid.json", dir))
+	testing.expect(t, err != "", "invalid.json should be an error")
+	testing.expect(t, strings.contains(err, "Could not parse recipe JSON"), "invalid.json error should use the parse path, got: %s", err)
+}

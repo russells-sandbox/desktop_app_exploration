@@ -15,7 +15,11 @@ const json_import = @import("json_import.zig");
 // from a URL on a worker thread, like rust-egui's: a URL
 // field and Import button in the left pane, a spinner
 // while importing, a count message on success, and an
-// error message on failure.
+// error message on failure. Raw-file import is the same
+// pipeline with the file read on the worker thread: a
+// path field and "Import from file…" button beside the
+// URL Import button (DVUI has no native file picker, so
+// the path is typed in, as in the image-import row).
 //
 // Layout, like the Rust version:
 //   - left pane: "Recipes", a title search box, an "Add
@@ -157,9 +161,12 @@ fn setDetailError(comptime fmt: []const u8, args: anytype) void {
 // with the local test-server default on the first frame;
 // import_message/import_error are formatted into their
 // buffers when pollImport reports, so they stay valid
-// across frames.
+// across frames. The file-import path buffer is empty
+// until the user types a path, as in the image-import
+// row (DVUI has no native file picker).
 var import_url_buffer: [1024]u8 = @splat(0);
 var import_url_set: bool = false;
+var import_file_buffer: [1024]u8 = @splat(0);
 var import_message: ?[]const u8 = null;
 var import_message_buf: [512]u8 = undefined;
 var import_error: ?[]const u8 = null;
@@ -308,10 +315,11 @@ pub fn appFrame() !dvui.App.Result {
     // image that is not already cached, failed, or loading.
     imageloader.poll();
 
-    // Collect a finished URL import, if any, without
-    // blocking: pollImport inserts on this thread (see
-    // json_import.zig) and reports the count and first id
-    // or the error, which the left pane shows below.
+    // Collect a finished URL or file import, if any,
+    // without blocking: pollImport inserts on this thread
+    // (see json_import.zig) and reports the count and
+    // first id or the error, which the left pane shows
+    // below.
     if (json_import.pollImport()) |outcome| {
         switch (outcome) {
             .imported => |imp| {
@@ -396,6 +404,18 @@ pub fn appFrame() !dvui.App.Result {
         var url_entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &import_url_buffer } }, .{ .expand = .horizontal });
         const url_text = url_entry.textGet();
         url_entry.deinit();
+        // Raw-file import (json_import.zig): a source-path
+        // field plus an "Import from file…" button, the
+        // same pattern as the image-import row — DVUI has
+        // no native file picker, so there is no file
+        // dialog, unlike rust-egui's rfd picker. The file
+        // is read and parsed on the same worker-thread +
+        // poll path as a URL import, with the same message
+        // and error display below.
+        dvui.label(@src(), "Import from file:", .{}, .{});
+        var file_entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &import_file_buffer } }, .{ .expand = .horizontal });
+        const file_text = file_entry.textGet();
+        file_entry.deinit();
         if (json_import.isImporting()) {
             var row = dvui.box(@src(), .{ .dir = .horizontal }, .{});
             defer row.deinit();
@@ -406,6 +426,17 @@ pub fn appFrame() !dvui.App.Result {
                 import_message = null;
                 import_error = null;
                 json_import.startImport(url_text);
+            }
+            if (dvui.button(@src(), "Import from file…", .{}, .{ .expand = .horizontal })) {
+                const source = std.mem.trim(u8, file_text, " \t\r\n");
+                if (source.len == 0) {
+                    import_message = null;
+                    import_error = std.fmt.bufPrint(&import_error_buf, "Enter a file path to import.", .{}) catch "Import failed.";
+                } else {
+                    import_message = null;
+                    import_error = null;
+                    json_import.startFileImport(source);
+                }
             }
         }
         if (import_message) |msg| {

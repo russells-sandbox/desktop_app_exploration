@@ -2,7 +2,10 @@ const std = @import("std");
 const db = @import("db.zig");
 
 // Network JSON import from a URL, matching rust-egui's
-// json_import.rs behaviour exactly:
+// json_import.rs behaviour exactly, plus raw-file import
+// (importFromFile / startFileImport) matching rust-egui's
+// import_from_file: the same parser, shapes, and defaults,
+// read on the same worker-thread + poll path, UTF-8 only.
 //
 // Accepted document shapes (see test-data/README.md for a
 // fixture for each one):
@@ -590,6 +593,52 @@ pub fn fetchAndParse(alloc: std.mem.Allocator, url: []const u8, io: std.Io) ![]d
     return parseRecipes(alloc, body);
 }
 
+// --- Raw-file import (matching rust-egui's
+// import_from_file) ---
+
+/// Import recipes from a raw file on disk: read the whole
+/// file as text and parse it with the same shapes and
+/// defaults as the URL importer (single object, bare
+/// array, or {"recipes": [...]}). Deliberately UTF-8
+/// only: JSON text is UTF-8 by definition, and detecting
+/// other encodings (UTF-16, Shift_JIS, Windows-1252, ...)
+/// is the separate text-encoding-import item, not this
+/// one. A non-UTF-8 file therefore errors here rather
+/// than importing garbled text. The returned recipes are
+/// owned by the caller (see freeRecipes). Read errors
+/// propagate as the underlying file error (FileNotFound,
+/// AccessDenied, ...); formatFileError turns those into
+/// rust-egui's "Could not read file {path}: ..." style.
+pub fn importFromFile(alloc: std.mem.Allocator, path: []const u8, io: std.Io) ![]db.Recipe {
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1 << 30));
+    defer alloc.free(text);
+    if (!std.unicode.utf8ValidateSlice(text)) return error.FileNotUtf8;
+    return parseRecipes(alloc, text);
+}
+
+/// A one-line UI message for a file-import error, in
+/// rust-egui's style ("Could not read file {path}: …",
+/// "Could not parse recipe JSON: …"). Parse errors reuse
+/// formatError; a non-UTF-8 file gets its own message;
+/// anything else from the read step is a read failure
+/// naming the underlying error. OutOfMemory keeps
+/// formatError's generic message rather than posing as a
+/// read failure.
+pub fn formatFileError(alloc: std.mem.Allocator, path: []const u8, err: anyerror) ![]u8 {
+    return switch (err) {
+        error.InvalidJson,
+        error.NotARecipe,
+        error.RecipesNotArray,
+        error.InvalidRecipe,
+        error.MissingTitle,
+        error.InvalidServings,
+        error.OutOfMemory,
+        => formatError(alloc, err),
+        error.FileNotUtf8 => alloc.dupe(u8, "File was not valid UTF-8."),
+        else => std.fmt.allocPrint(alloc, "Could not read file {s}: {s}.", .{ path, @errorName(err) }),
+    };
+}
+
 /// A one-line UI message for an import error, in
 /// rust-egui's style ("Could not parse recipe JSON: …",
 /// "Server returned HTTP 404.", …). The message is
@@ -631,6 +680,11 @@ const Slot = struct {
     mutex: std.Thread.Mutex = .{},
     done: bool = false,
     err: ?anyerror = null,
+    // Preformatted failure message (in msg_arena), set by
+    // the file worker so the read failure can name the
+    // file path, as rust-egui's message does; null for
+    // URL imports, where pollImport formats from err.
+    err_msg: ?[]const u8 = null,
     recipes: []db.Recipe = &.{},
     arena: std.heap.ArenaAllocator,
 };
@@ -691,6 +745,56 @@ pub fn startImport(url: []const u8) void {
     thread.detach();
 }
 
+fn importFileWorker(path: []const u8, s: *Slot) void {
+    // Same worker-thread pattern as importWorker: the
+    // file is read and parsed here, never on the UI
+    // thread, and the main thread polls the slot. The
+    // Threaded Io is created on this thread, as in
+    // importWorker; file reads go through it (unlike
+    // socket reads, file reads have no worker-thread
+    // hang — imageloader.zig already reads files this
+    // way on its worker thread).
+    var threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    const io = threaded.io();
+    const arena_alloc = s.arena.allocator();
+    const recipes = importFromFile(arena_alloc, path, io) catch |err| {
+        const msg = formatFileError(msg_alloc, path, err) catch "Import failed.";
+        s.mutex.lock();
+        s.err = err;
+        s.err_msg = msg;
+        s.done = true;
+        s.mutex.unlock();
+        return;
+    };
+    s.mutex.lock();
+    s.recipes = recipes;
+    s.done = true;
+    s.mutex.unlock();
+}
+
+/// Start importing from a file on a worker thread, with
+/// the same already-running guard and the same poll path
+/// as startImport. The path is copied: the caller's
+/// slice only needs to live for this call.
+pub fn startFileImport(path: []const u8) void {
+    if (slot != null) return;
+    const page = std.heap.page_allocator;
+    const s = page.create(Slot) catch return;
+    s.* = .{ .arena = std.heap.ArenaAllocator.init(page) };
+    const path_copy = s.arena.allocator().dupe(u8, std.mem.trim(u8, path, " \t\r\n")) catch {
+        page.destroy(s);
+        return;
+    };
+    slot = s;
+    const thread = std.Thread.spawn(.{}, importFileWorker, .{ path_copy, s }) catch {
+        slot = null;
+        s.arena.deinit();
+        page.destroy(s);
+        return;
+    };
+    thread.detach();
+}
+
 /// True while an import worker is running.
 pub fn isImporting() bool {
     return slot != null;
@@ -710,6 +814,7 @@ pub fn pollImport() ?Outcome {
     s.mutex.lock();
     const done = s.done;
     const err = s.err;
+    const err_msg = s.err_msg;
     const recipes = s.recipes;
     s.mutex.unlock();
     if (!done) return null;
@@ -719,7 +824,10 @@ pub fn pollImport() ?Outcome {
         std.heap.page_allocator.destroy(s);
     }
     if (err) |e| {
-        const msg = formatError(msg_alloc, e) catch "Import failed.";
+        const msg = if (err_msg) |m|
+            m
+        else
+            formatError(msg_alloc, e) catch "Import failed.";
         return .{ .failed = msg };
     }
     var count: usize = 0;
@@ -962,4 +1070,137 @@ test "imported recipes insert into a throwaway database" {
     try std.testing.expectEqual(id, db.recipes[0].id);
     try std.testing.expectEqualStrings("Mushroom Risotto", db.recipes[0].title);
     try std.testing.expectEqual(@as(usize, 1), db.recipes[0].ingredients.len);
+}
+
+// --- Raw-file import tests (mirroring rust-egui's
+// import_from_file tests) ---
+
+// Write `contents` to `name` inside a fresh temp dir and
+// return the file's absolute path, allocated from the
+// test allocator.
+fn writeTempFile(tmp: *std.testing.TmpDir, name: []const u8, contents: []const u8) ![]u8 {
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = name, .data = contents });
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    return std.fmt.allocPrint(test_alloc, "{s}/{s}", .{ path_buf[0..n], name });
+}
+
+test "import from file single recipe" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const path = try writeTempFile(&tmp, "single.json", single_json);
+    defer test_alloc.free(path);
+    const recipes = try importFromFile(test_alloc, path, std.testing.io);
+    defer freeRecipes(test_alloc, recipes);
+    try std.testing.expectEqual(@as(usize, 1), recipes.len);
+    try std.testing.expectEqualStrings("Mushroom Risotto", recipes[0].title);
+}
+
+test "import from file collection" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const body = try std.fmt.allocPrint(test_alloc, "{{\"recipes\": [{s}, {s}]}}", .{ single_json, single_json });
+    defer test_alloc.free(body);
+    const path = try writeTempFile(&tmp, "collection.json", body);
+    defer test_alloc.free(path);
+    const recipes = try importFromFile(test_alloc, path, std.testing.io);
+    defer freeRecipes(test_alloc, recipes);
+    try std.testing.expectEqual(@as(usize, 2), recipes.len);
+}
+
+test "import from file bare array and empty collection" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const array_body = try std.fmt.allocPrint(test_alloc, "[{s}]", .{single_json});
+    defer test_alloc.free(array_body);
+    const array_path = try writeTempFile(&tmp, "array.json", array_body);
+    defer test_alloc.free(array_path);
+    const from_array = try importFromFile(test_alloc, array_path, std.testing.io);
+    defer freeRecipes(test_alloc, from_array);
+    try std.testing.expectEqual(@as(usize, 1), from_array.len);
+    const empty_path = try writeTempFile(&tmp, "empty.json", "{\"recipes\": []}");
+    defer test_alloc.free(empty_path);
+    const from_empty = try importFromFile(test_alloc, empty_path, std.testing.io);
+    defer freeRecipes(test_alloc, from_empty);
+    try std.testing.expectEqual(@as(usize, 0), from_empty.len);
+}
+
+test "import from file invalid, non-UTF-8, and missing" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const invalid_path = try writeTempFile(&tmp, "invalid.json", "{ this is not json");
+    defer test_alloc.free(invalid_path);
+    try std.testing.expectError(error.InvalidJson, importFromFile(test_alloc, invalid_path, std.testing.io));
+    const invalid_msg = try formatFileError(test_alloc, invalid_path, error.InvalidJson);
+    defer test_alloc.free(invalid_msg);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_msg, "Could not parse recipe JSON") != null);
+    const non_utf8_path = try writeTempFile(&tmp, "non-utf8.json", "\xff\xfe{\"title\": \"Toast\"}");
+    defer test_alloc.free(non_utf8_path);
+    try std.testing.expectError(error.FileNotUtf8, importFromFile(test_alloc, non_utf8_path, std.testing.io));
+    const non_utf8_msg = try formatFileError(test_alloc, non_utf8_path, error.FileNotUtf8);
+    defer test_alloc.free(non_utf8_msg);
+    try std.testing.expectEqualStrings("File was not valid UTF-8.", non_utf8_msg);
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const missing_path = try std.fmt.allocPrint(test_alloc, "{s}/missing.json", .{path_buf[0..n]});
+    defer test_alloc.free(missing_path);
+    const missing_err = importFromFile(test_alloc, missing_path, std.testing.io);
+    try std.testing.expectError(error.FileNotFound, missing_err);
+    const missing_msg = try formatFileError(test_alloc, missing_path, error.FileNotFound);
+    defer test_alloc.free(missing_msg);
+    try std.testing.expect(std.mem.indexOf(u8, missing_msg, "Could not read file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_msg, missing_path) != null);
+}
+
+// Locate a shared test-data fixture. @src().file is only
+// the file name in this build, so it cannot anchor the
+// path; instead probe the two plausible working
+// directories: zig-dvui/ (the documented `zig test
+// src/json_import.zig` invocation, where the fixtures
+// are at ../test-data) and the repo root (test-data).
+// If neither probes, return the documented location so
+// the failure names a real path.
+fn fixturePath(alloc: std.mem.Allocator, name: []const u8) ![]u8 {
+    const candidates = [_][]const u8{ "../test-data/", "test-data/" };
+    for (candidates) |prefix| {
+        const path = try std.fmt.allocPrint(alloc, "{s}{s}", .{ prefix, name });
+        std.Io.Dir.cwd().access(std.testing.io, path, .{}) catch {
+            alloc.free(path);
+            continue;
+        };
+        return path;
+    }
+    return std.fmt.allocPrint(alloc, "../test-data/{s}", .{name});
+}
+
+test "import from file shared fixtures" {
+    const single_path = try fixturePath(test_alloc, "recipe-single.json");
+    defer test_alloc.free(single_path);
+    const single = try importFromFile(test_alloc, single_path, std.testing.io);
+    defer freeRecipes(test_alloc, single);
+    try std.testing.expectEqual(@as(usize, 1), single.len);
+    try std.testing.expectEqualStrings("Mushroom Risotto", single[0].title);
+    const array_path = try fixturePath(test_alloc, "recipes-array.json");
+    defer test_alloc.free(array_path);
+    const array = try importFromFile(test_alloc, array_path, std.testing.io);
+    defer freeRecipes(test_alloc, array);
+    try std.testing.expectEqual(@as(usize, 2), array.len);
+    try std.testing.expectEqualStrings("Pancakes", array[0].title);
+    try std.testing.expectEqualStrings("Greek Salad", array[1].title);
+    const collection_path = try fixturePath(test_alloc, "recipes.json");
+    defer test_alloc.free(collection_path);
+    const collection = try importFromFile(test_alloc, collection_path, std.testing.io);
+    defer freeRecipes(test_alloc, collection);
+    try std.testing.expectEqual(@as(usize, 3), collection.len);
+    try std.testing.expectEqualStrings("Fried Chicken", collection[0].title);
+    try std.testing.expectEqualStrings("Lasagna", collection[1].title);
+    try std.testing.expectEqualStrings("Butter Tarts", collection[2].title);
+    const empty_path = try fixturePath(test_alloc, "recipes-empty.json");
+    defer test_alloc.free(empty_path);
+    const empty = try importFromFile(test_alloc, empty_path, std.testing.io);
+    defer freeRecipes(test_alloc, empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+    const invalid_path = try fixturePath(test_alloc, "invalid.json");
+    defer test_alloc.free(invalid_path);
+    try std.testing.expectError(error.InvalidJson, importFromFile(test_alloc, invalid_path, std.testing.io));
 }

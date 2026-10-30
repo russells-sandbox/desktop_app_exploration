@@ -126,6 +126,33 @@ UI) until the connection closes. The shared fixtures in
 `test-data/` cover all three shapes plus the empty
 collection and the invalid-JSON error case.
 
+## Raw-file JSON import
+
+The left pane has an "Import from file:" field and an
+"Import from file..." button below the URL import row.
+raylib has no file picker dialog, so the path comes from
+a text field — the same pattern as image import in the
+edit form — and the button sits below the URL row rather
+than beside it; the Rust version's button sits beside
+its URL Import button because its native file dialog
+supplies the path. The button is shown only when not
+editing and no import is in flight. The chosen file goes
+through the same worker-thread + poll path
+(`import_from_file` in `src/json_import.odin`, run by
+the same `import_thread`, collected by the same
+`import_poll`) and the same message/error display as
+the URL import, so reading and parsing never block the
+UI. It reads the whole file as UTF-8 and parses it with
+the URL importer's `parse_recipes`: the same three
+shapes, the same defaults, the same "Could not parse
+recipe JSON" path, and the Rust version's read-failure
+message shape ("Could not read file {path}: {err}").
+Deliberately UTF-8 only: a non-UTF-8 file is an error,
+because encoding detection is the separate
+text-encoding todo item. The button label uses three
+ASCII dots, not an ellipsis: the default font renders
+"…" as "?" (see "Default-font glyphs" below).
+
 ## SQLite — the wrinkle
 
 Odin ships no SQLite package. `vendor/` has no sqlite
@@ -237,9 +264,9 @@ uses clang to link on Linux.
 
 ## Current state
 
-Up to and including network JSON import from a URL in
+Up to and including raw-file JSON import in
 `todo.md` (past `display animations: image loading
-state`): install scripts (Ubuntu, Fedora),
+state` and network JSON import from a URL): install scripts (Ubuntu, Fedora),
 hello world (the window itself), recipe view with
 hard-coded data (superseded by SQLite), recipe view with
 SQLite integration, add recipe, edit recipe, delete
@@ -247,8 +274,9 @@ recipe, recipe list with title search, recipe detail,
 display images (list thumbnails and detail photo),
 import image from a file, display animations (list/detail
 transitions, image loading state), network JSON import
-from a URL.
+from a URL, raw-file JSON import (single recipe and
+collection).
 
 Out of scope for this stack, as for the others at this
 stage: network image import, raw-file JSON
-import/export, CPU/memory profiling, Windows/macOS builds.
+export, CPU/memory profiling, Windows/macOS builds.

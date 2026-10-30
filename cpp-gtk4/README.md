@@ -39,7 +39,7 @@ is the Fedora equivalent of `install_dependencies_ubuntu.sh`):
 
 ## Tests
 
-Recipe-data, search, and URL JSON import unit tests (no
+Recipe-data, search, and URL/raw-file JSON import unit tests (no
 encoding, UI, or end-to-end tests). Plain check mains, no test
 framework. The DB tests use a throwaway database under `/tmp`
 and never open the real `recipes.db`.
@@ -93,12 +93,15 @@ g++ -std=c++17 -Wall -Wextra -pthread test_json_import.cpp json_import.cpp -o /t
   change and fades in over 0.25s (ease-out cubic) via a GLib
   timeout stepping the detail container's opacity. The left pane
   also has the URL import row: a URL entry (defaulting to the
-  local test-data server), an Import button, a spinner while an
-  import is in flight, and a status label showing "Imported N
-  recipe(s)." or the error in red. Fetching/parsing runs on a
-  `GThread` and inserts on the main thread through an idle
-  callback, the same pattern as image loading; the first
-  imported recipe is selected.
+  local test-data server), an Import button, an "Import from
+  file…" button (a `GtkFileDialog` with a JSON filter, same
+  worker-thread path but reading a local file instead of
+  fetching a URL; UTF-8 only, as in `rust-egui`), a spinner
+  while an import is in flight, and a status label showing
+  "Imported N recipe(s)." or the error in red. Fetching/
+  reading/parsing runs on a `GThread` and inserts on the main
+  thread through an idle callback, the same pattern as image
+  loading; the first imported recipe is selected.
 
 ## Stack-specific wrinkles
 

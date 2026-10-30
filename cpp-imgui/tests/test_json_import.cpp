@@ -1,4 +1,4 @@
-// Unit tests for URL JSON import (cpp-imgui).
+// Unit tests for URL and raw-file JSON import (cpp-imgui).
 //
 // Covers the importer's parsing and fetching exactly as
 // rust-egui's json_import tests do: all three document shapes,
@@ -6,7 +6,10 @@
 // titles, string escapes, chunked bodies, redirects, and a
 // non-200 error — plus fetching from a one-shot local server
 // (a thread that binds first, so the port is known, then serves
-// exactly one response).
+// exactly one response) — and raw-file import from temp files
+// and from the shared test-data fixtures on disk, mirroring
+// rust-egui's import_from_file tests, including the UTF-8-only
+// rule (a non-UTF-8 file is an error).
 //
 // Plain asserts only; no test framework. No SQLite, SDL, or Dear
 // ImGui dependency: json_import.cpp uses db.h only for the
@@ -21,6 +24,8 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -111,6 +116,57 @@ bool parse_fails(const std::string& text) {
         std::fprintf(stderr, "unexpected parse success for: %s\n", text.c_str());
     }
     return !ok && !error.empty();
+}
+
+std::string write_temp_file(const std::string& name, const std::string& contents) {
+    std::filesystem::path path =
+        std::filesystem::temp_directory_path() /
+        ("cpp-imgui-import-test-" + std::to_string(getpid()) + "-" + name +
+         ".json");
+    std::ofstream out(path, std::ios::binary);
+    assert(out);
+    out << contents;
+    out.close();
+    return path.string();
+}
+
+// The shared test-data fixtures, found wherever the test binary
+// runs from: ctest runs from cpp-imgui/build, the plain g++
+// command in the README runs from cpp-imgui/, and a manual run
+// may run from the repo root. Returns empty when no candidate
+// exists, so the test fails with a clear message instead of a
+// misleading parse error.
+std::string fixture_path(const std::string& name) {
+    for (const char* candidate : {"../../test-data/", "../test-data/",
+                                  "test-data/"}) {
+        std::string path = std::string(candidate) + name;
+        std::ifstream probe(path, std::ios::binary);
+        if (probe) {
+            return path;
+        }
+    }
+    return "";
+}
+
+bool file_ok(const std::string& path, std::vector<Recipe>& recipes) {
+    std::string error;
+    bool ok = import_from_file(path, recipes, error);
+    if (!ok) {
+        std::fprintf(stderr, "unexpected file import error for %s: %s\n",
+                     path.c_str(), error.c_str());
+    }
+    return ok;
+}
+
+bool file_fails(const std::string& path, const std::string& must_contain) {
+    std::vector<Recipe> recipes;
+    std::string error;
+    bool ok = import_from_file(path, recipes, error);
+    if (ok) {
+        std::fprintf(stderr, "unexpected file import success for: %s\n",
+                     path.c_str());
+    }
+    return !ok && error.find(must_contain) != std::string::npos;
 }
 
 }  // namespace
@@ -284,6 +340,99 @@ int main() {
         assert(!fetch_url(server.url("/missing.json"), fetched_body, error));
         ++checks;
         assert(error.find("404") != std::string::npos);
+        ++checks;
+    }
+
+    // Raw-file import: single recipe from a temp file.
+    {
+        std::string path = write_temp_file("single", kSingle);
+        assert(file_ok(path, recipes));
+        ++checks;
+        assert(recipes.size() == 1 && recipes[0].title == "Mushroom Risotto");
+        ++checks;
+        std::filesystem::remove(path);
+    }
+
+    // Raw-file import: collection from a temp file.
+    {
+        std::string body = std::string("{\"recipes\": [") + kSingle + "," + kSingle + "]}";
+        std::string path = write_temp_file("collection", body);
+        assert(file_ok(path, recipes));
+        ++checks;
+        assert(recipes.size() == 2);
+        ++checks;
+        std::filesystem::remove(path);
+    }
+
+    // Raw-file import: bare array and empty collection.
+    {
+        std::string path = write_temp_file("array", std::string("[") + kSingle + "]");
+        assert(file_ok(path, recipes));
+        ++checks;
+        assert(recipes.size() == 1);
+        ++checks;
+        std::filesystem::remove(path);
+        path = write_temp_file("empty", "{\"recipes\": []}");
+        assert(file_ok(path, recipes));
+        ++checks;
+        assert(recipes.empty());
+        ++checks;
+        std::filesystem::remove(path);
+    }
+
+    // Raw-file import: invalid JSON and a missing file are errors.
+    {
+        std::string path = write_temp_file("invalid", "{ this is not json");
+        assert(file_fails(path, "Could not parse recipe JSON"));
+        ++checks;
+        std::filesystem::remove(path);
+        std::string missing =
+            (std::filesystem::temp_directory_path() /
+             ("cpp-imgui-import-test-" + std::to_string(getpid()) + "-missing.json"))
+                .string();
+        assert(file_fails(missing, "Could not read file"));
+        ++checks;
+    }
+
+    // Raw-file import is UTF-8 only: a file with bytes that are
+    // not valid UTF-8 (here a lone 0xFF, as Latin-1 would
+    // produce) fails instead of importing mojibake.
+    {
+        std::string bad = "{\"title\": \"";
+        bad.push_back(static_cast<char>(0xFF));
+        bad += "\"}";
+        std::string path = write_temp_file("non-utf8", bad);
+        assert(file_fails(path, "Could not read file"));
+        ++checks;
+        std::filesystem::remove(path);
+    }
+
+    // Raw-file import: the shared test-data fixtures, read from
+    // disk rather than from inline JSON, so the file path itself
+    // is exercised end to end.
+    {
+        std::string single = fixture_path("recipe-single.json");
+        assert(!single.empty());
+        ++checks;
+        assert(file_ok(single, recipes));
+        ++checks;
+        assert(recipes.size() == 1 && recipes[0].title == "Mushroom Risotto");
+        ++checks;
+        assert(file_ok(fixture_path("recipes-array.json"), recipes));
+        ++checks;
+        assert(recipes.size() == 2 && recipes[0].title == "Pancakes" &&
+               recipes[1].title == "Greek Salad");
+        ++checks;
+        assert(file_ok(fixture_path("recipes.json"), recipes));
+        ++checks;
+        assert(recipes.size() == 3 && recipes[0].title == "Fried Chicken" &&
+               recipes[1].title == "Lasagna" && recipes[2].title == "Butter Tarts");
+        ++checks;
+        assert(file_ok(fixture_path("recipes-empty.json"), recipes));
+        ++checks;
+        assert(recipes.empty());
+        ++checks;
+        assert(file_fails(fixture_path("invalid.json"), "Could not parse recipe JSON"));
         ++checks;
     }
 

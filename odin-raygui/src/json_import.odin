@@ -3,6 +3,7 @@ package main
 import "core:encoding/json"
 import "core:fmt"
 import "core:net"
+import "core:os"
 import "core:strconv"
 import "core:strings"
 import "core:unicode/utf8"
@@ -477,4 +478,30 @@ fetch_and_parse :: proc(url: string) -> ([]Recipe, string) {
 	}
 	defer delete(body)
 	return parse_recipes(body)
+}
+
+// ---- Raw-file JSON import ----
+
+// Read a whole file as UTF-8 text and parse it with the
+// same parser the URL importer uses: the same three
+// document shapes, the same defaults, the same "Could not
+// parse recipe JSON" path. Mirrors
+// rust-egui/src/json_import.rs's import_from_file,
+// including its read-failure message shape ("Could not
+// read file {path}: {err}"). Deliberately UTF-8 only: a
+// non-UTF-8 file is an error, because encoding detection
+// (UTF-16, Windows-1252, Shift_JIS) is a separate todo
+// item, not this one. The worker thread runs this, like
+// fetch_and_parse, so reading and parsing never block the
+// UI.
+import_from_file :: proc(path: string) -> ([]Recipe, string) {
+	data, rerr := os.read_entire_file(path, context.allocator)
+	if rerr != nil {
+		return nil, fmt.tprintf("Could not read file %s: %v.", path, rerr)
+	}
+	defer delete(data)
+	if !utf8.valid_string(string(data)) {
+		return nil, fmt.tprintf("Could not read file %s: file is not valid UTF-8.", path)
+	}
+	return parse_recipes(string(data))
 }
