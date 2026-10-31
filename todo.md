@@ -28,7 +28,6 @@ has been tested on Fedora yet.
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [X] raw-file import: recipes as JSON, single recipe
 - [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
@@ -66,7 +65,6 @@ has been tested on Fedora yet.
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [X] raw-file import: recipes as JSON, single recipe
 - [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
@@ -104,7 +102,6 @@ has been tested on Fedora yet.
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [X] raw-file import: recipes as JSON, single recipe
 - [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
@@ -142,7 +139,6 @@ has been tested on Fedora yet.
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [X] raw-file import: recipes as JSON, single recipe
 - [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
@@ -180,7 +176,6 @@ has been tested on Fedora yet.
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [X] raw-file import: recipes as JSON, single recipe
 - [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
@@ -218,7 +213,6 @@ has been tested on Fedora yet.
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [X] raw-file import: recipes as JSON, single recipe
 - [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
@@ -256,7 +250,6 @@ has been tested on Fedora yet.
 - [X] display animations: list/detail transitions
 - [X] display animations: image loading state
 - [X] network request import: recipe JSON from a URL, asynchronously, with loading and error states, without blocking the UI
-- [ ] network request import: recipe image from a URL, asynchronously, with loading and error states, without blocking the UI
 - [X] raw-file import: recipes as JSON, single recipe
 - [X] raw-file import: recipes as JSON, collection
 - [ ] raw-file export: recipes as JSON, single recipe
