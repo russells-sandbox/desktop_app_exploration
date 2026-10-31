@@ -1,5 +1,6 @@
 mod db;
 mod images;
+mod json_export;
 mod json_import;
 mod search;
 mod seed;
@@ -128,6 +129,11 @@ struct RecipeApp {
     import_url: String,
     import_message: Option<String>,
     import_error: Option<String>,
+    // Last export result, shown in the left pane like the import
+    // messages. Export writes are synchronous (see below), so
+    // there is no in-flight state to poll for, unlike import.
+    export_message: Option<String>,
+    export_error: Option<String>,
     // Images still decoding on a worker thread, keyed by image path.
     // Decoding runs off the UI thread, so a large image never blocks
     // the interface: while a path is in this map, the list and detail
@@ -184,6 +190,8 @@ fn main() -> eframe::Result<()> {
                 import_url: "http://localhost:8000/recipes.json".to_string(),
                 import_message: None,
                 import_error: None,
+                export_message: None,
+                export_error: None,
                 textures: HashMap::new(),
                 texture_failures: HashSet::new(),
                 pending_textures: HashMap::new(),
@@ -314,6 +322,34 @@ impl RecipeApp {
             }
         }
     }
+
+    // Finish an export the user started from a save dialog:
+    // serialize (already done by the caller), write the file, and
+    // report the result in the left pane, including the path the
+    // user chose, since that is the point of the dialog.
+    fn complete_export(
+        &mut self,
+        path: std::path::PathBuf,
+        text: Result<String, String>,
+        summary: String,
+    ) {
+        self.export_message = None;
+        self.export_error = None;
+        match text {
+            Ok(text) => match json_export::write_export(&path, &text) {
+                Ok(()) => {
+                    self.export_message =
+                        Some(format!("{} to {}.", summary, path.display()));
+                }
+                Err(err) => {
+                    self.export_error = Some(err);
+                }
+            },
+            Err(err) => {
+                self.export_error = Some(err);
+            }
+        }
+    }
 }
 
 impl eframe::App for RecipeApp {
@@ -342,6 +378,11 @@ impl eframe::App for RecipeApp {
         let mut import_url = self.import_url.clone();
         let mut import_clicked = false;
         let mut import_file_path: Option<std::path::PathBuf> = None;
+        // Export paths, filled in by the left-pane and detail-pane
+        // buttons below and acted on after the panels, so the
+        // dialogs do not have to write while a panel borrows self.
+        let mut export_all_path: Option<std::path::PathBuf> = None;
+        let mut export_single_path: Option<std::path::PathBuf> = None;
 
         egui::Panel::left("recipe_list").show(ui, |ui| {
             ui.heading("Recipes");
@@ -391,6 +432,27 @@ impl eframe::App for RecipeApp {
                 ui.label(message);
             }
             if let Some(error) = &self.import_error {
+                ui.colored_label(egui::Color32::RED, error);
+            }
+            // Export all: the OS save dialog is the same rfd
+            // pattern as the file pickers above, except it lets
+            // the user choose the file name and location instead
+            // of picking an existing file. The write itself
+            // happens after the panel (see below); a cancelled
+            // dialog returns None and writes nothing.
+            if ui.button("Export all…").clicked() && !editing {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("JSON", &["json"])
+                    .set_file_name("recipes.json")
+                    .save_file()
+                {
+                    export_all_path = Some(path);
+                }
+            }
+            if let Some(message) = &self.export_message {
+                ui.label(message);
+            }
+            if let Some(error) = &self.export_error {
                 ui.colored_label(egui::Color32::RED, error);
             }
             ui.separator();
@@ -458,6 +520,16 @@ impl eframe::App for RecipeApp {
                 let _ = sender.send(json_import::import_from_file(&path));
             });
             self.import_receiver = Some(receiver);
+        }
+        if let Some(path) = export_all_path {
+            let total = self.recipes.len();
+            let summary = if total == 1 {
+                "Exported 1 recipe".to_string()
+            } else {
+                format!("Exported {} recipes", total)
+            };
+            let text = json_export::export_collection(&self.recipes);
+            self.complete_export(path, text, summary);
         }
 
         // List/detail transition progress, 0.0 (just changed) to 1.0
@@ -687,6 +759,21 @@ impl eframe::App for RecipeApp {
                         if ui.button("Delete").clicked() {
                             self.confirming_delete = true;
                         }
+                        // Export this one recipe: same rfd save
+                        // dialog as "Export all…", with the recipe
+                        // title as the default file name, so the
+                        // user chooses both name and location.
+                        if ui.button("Export recipe…").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("JSON", &["json"])
+                                .set_file_name(json_export::default_file_name(
+                                    &recipe.title,
+                                ))
+                                .save_file()
+                            {
+                                export_single_path = Some(path);
+                            }
+                        }
                     });
                     if let Some(error) = &self.detail_error {
                         ui.colored_label(egui::Color32::RED, error);
@@ -744,6 +831,22 @@ impl eframe::App for RecipeApp {
                 }
             });
         });
+
+        if let Some(path) = export_single_path {
+            // The recipe shown in the detail pane above.
+            match self.selected_recipe().cloned() {
+                Some(recipe) => {
+                    let summary = format!("Exported \"{}\"", recipe.title);
+                    let text = json_export::export_single(&recipe);
+                    self.complete_export(path, text, summary);
+                }
+                None => {
+                    self.export_message = None;
+                    self.export_error =
+                        Some("No recipe selected to export.".to_string());
+                }
+            }
+        }
     }
 }
 
@@ -802,6 +905,8 @@ mod tests {
             import_url: String::new(),
             import_message: None,
             import_error: None,
+            export_message: None,
+            export_error: None,
             textures: HashMap::new(),
             texture_failures: HashSet::new(),
             pending_textures: HashMap::new(),
