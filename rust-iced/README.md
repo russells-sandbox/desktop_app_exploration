@@ -68,11 +68,15 @@ states, inserting through the same SQLite layer.
   detail keeps showing the selected recipe even if it no
   longer matches the filter. While a recipe is being edited,
   the list buttons are disabled so a click cannot discard
-  the in-progress edit.
+  the in-progress edit. An "Export all…" button in the left
+  pane writes all recipes as a `{"recipes": [...]}` collection
+  via the OS save dialog.
 - Right pane (scrollable): detail for the selected recipe —
   description, servings, image (up to 400x300, or
   "[No image yet]", or an error line), Edit/Delete buttons,
-  ingredients, numbered steps, and notes.
+  ingredients, numbered steps, and notes. An "Export recipe…"
+  button beside Edit/Delete writes the selected recipe as a
+  bare JSON object via the OS save dialog.
 - Add/edit form: title (required), description, servings
   (must be a whole number), image path with a "Choose
   image…" file picker, ingredients (amount/unit/name rows

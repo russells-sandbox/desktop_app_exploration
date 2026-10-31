@@ -249,6 +249,25 @@ the image import already uses (unlike the Rust version's rfd
 dialog). An empty path does nothing, like a cancelled
 dialog.
 
+## Raw-file JSON export
+
+The Recipes pane also has an "Export all" row below the
+file import: a path field defaulting to `recipes.json` and
+an "Export all" button, writing all recipes as a
+`{"recipes": [...]}` collection. The detail pane has an
+"Export recipe" row: a path field defaulting to a file
+name built from the selected recipe's title (other
+characters become underscores, an empty title falls back
+to `recipe.json`) and an "Export recipe" button, writing
+that one recipe as a bare object. Both write with
+`write_export` (`src/json_export.odin`), which serializes
+the same fields, in the same order, as the importer
+expects, pretty-printed, so an export re-imports
+unchanged; a missing image path is written as `null`.
+The path is typed, not picked, like the file import, and
+an empty path does nothing. The result is reported in
+the Recipes pane, naming the path written, or the error.
+
 ## Animations
 
 - **List/detail transition** (0.25s, ease-out cubic

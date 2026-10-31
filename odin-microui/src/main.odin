@@ -311,6 +311,23 @@ main :: proc() {
 	import_job: ^Import_Job
 	import_message := ""
 	import_error := ""
+	// JSON export state (see json_export.odin), displayed
+	// with the import messages in the left pane: the path
+	// field for "Export all" defaults to recipes.json, and
+	// export_message/export_error are heap strings owned by
+	// main, freed before they are replaced, like the import
+	// messages. The single-recipe path field lives in the
+	// detail pane, and export_single_for_id tracks which
+	// recipe its default was built for, so switching recipes
+	// resets it to that recipe's default file name.
+	export_all_buf: [512]u8
+	export_all_len := 0
+	buf_set(export_all_buf[:], &export_all_len, "recipes.json")
+	export_single_buf: [512]u8
+	export_single_len := 0
+	export_single_for_id: i64 = -1
+	export_message := ""
+	export_error := ""
 
 	// List/detail transition state: which recipe id the current
 	// fade/slide is for, when it started, and the detail pane's
@@ -565,6 +582,40 @@ main :: proc() {
 					}
 				}
 			}
+			// JSON export of all recipes (see json_export.odin),
+			// like the Rust version's "Export all…" button,
+			// except the path is typed, not picked: raylib
+			// has no file picker, and this is the pattern
+			// the raw-file import already uses. The write
+			// is synchronous, like the Rust version's, and
+			// the status names the path written, or the
+			// error, in the same place as the import
+			// messages above. An empty path does nothing,
+			// like a cancelled dialog in the Rust version.
+			// The button is ignored while editing, so an
+			// export cannot discard an in-progress edit.
+			mu.label(ctx, "Export all:")
+			mu.textbox(ctx, export_all_buf[:], &export_all_len)
+			if !editing {
+				if res := mu.button(ctx, "Export all", .NONE, {}); .SUBMIT in res {
+					path := strings.trim_space(buf_str(export_all_buf[:], export_all_len))
+					if path != "" {
+						text := export_collection(recipes[:])
+						summary := "Exported 1 recipe"
+						if len(recipes) != 1 {
+							summary = fmt.tprintf("Exported %d recipes", len(recipes))
+						}
+						finish_export(&export_message, &export_error, path, text, summary)
+						delete(text)
+					}
+				}
+			}
+			if export_message != "" {
+				mu.label(ctx, export_message)
+			}
+			if export_error != "" {
+				mu.label(ctx, export_error)
+			}
 			for recipe in recipes {
 				if !matches_search(recipe.title, query) {
 					continue
@@ -781,6 +832,34 @@ main :: proc() {
 					confirming_delete = true
 				}
 				mu.layout_row(ctx, {-1}, 0)
+				// JSON export of this one recipe (see
+				// json_export.odin), like the Rust version's
+				// "Export recipe…" button, except the path
+				// is typed, not picked. The field's default
+				// follows the selection: it is rebuilt from
+				// the selected recipe's title whenever the
+				// selection changes, so the user can still
+				// type a different name before clicking.
+				// An empty path does nothing, like a
+				// cancelled dialog. The result is reported
+				// with the export messages in the left pane.
+				if export_single_for_id != recipe.id {
+					name := default_file_name(recipe.title)
+					buf_set(export_single_buf[:], &export_single_len, name)
+					delete(name)
+					export_single_for_id = recipe.id
+				}
+				mu.label(ctx, "Export recipe:")
+				mu.textbox(ctx, export_single_buf[:], &export_single_len)
+				if res := mu.button(ctx, "Export recipe", .NONE, {}); .SUBMIT in res {
+					path := strings.trim_space(buf_str(export_single_buf[:], export_single_len))
+					if path != "" {
+						text := export_single(recipe)
+						summary := fmt.tprintf("Exported \"%s\"", recipe.title)
+						finish_export(&export_message, &export_error, path, text, summary)
+						delete(text)
+					}
+				}
 				if confirming_delete {
 					mu.label(ctx, "Delete this recipe?")
 					mu.layout_row(ctx, {150, 100}, 0)
@@ -989,5 +1068,12 @@ main :: proc() {
 	}
 	if import_error != "" {
 		delete(import_error)
+	}
+	// Export status strings follow the same rule.
+	if export_message != "" {
+		delete(export_message)
+	}
+	if export_error != "" {
+		delete(export_error)
 	}
 }

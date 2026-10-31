@@ -14,6 +14,7 @@
 // Exit code is 0 only when every check passes; each failure is
 // printed and the run continues so all failures are visible.
 
+#include "json_export.h"
 #include "json_import.h"
 
 #include <arpa/inet.h>
@@ -473,6 +474,156 @@ int main(int argc, char** argv) {
                       std::string::npos,
                   "fixture invalid.json error mentions parsing");
         }
+    }
+
+    // JSON export (json_export.h/.cpp), mirroring rust-egui's
+    // seven export tests: single and collection round-trip
+    // through parse_recipes, empty collection, image_path
+    // preserved, file-name sanitization, write-and-overwrite,
+    // and write-to-a-missing-directory errors, plus an
+    // escaping round-trip for the hand-written serializer.
+    {
+        ImportedRecipe sample;
+        sample.title = "Mushroom Risotto";
+        sample.description = "Creamy rice.";
+        sample.servings = 4;
+        sample.image_path = "";
+        sample.notes = "Stir often.";
+        sample.ingredients = {ImportedIngredient{"1", "lb", "mushrooms"}};
+        sample.steps = {"Cook it."};
+
+        // Single recipe: a bare object that re-imports.
+        std::string text = export_single(sample);
+        check(!text.empty() && text[0] == '{',
+              "export single starts with an object");
+        check(text.find("\"recipes\"") == std::string::npos,
+              "export single is not wrapped in a recipes object");
+        check(parse_ok(text, recipes), "export single re-imports");
+        check(recipes.size() == 1, "export single re-import count");
+        if (!recipes.empty()) {
+            check(recipes[0].title == "Mushroom Risotto",
+                  "export single re-import title");
+            check(recipes[0].description == "Creamy rice.",
+                  "export single re-import description");
+            check(recipes[0].servings == 4,
+                  "export single re-import servings");
+            check(recipes[0].image_path.empty(),
+                  "export single re-import null image_path");
+            check(recipes[0].notes == "Stir often.",
+                  "export single re-import notes");
+            check(recipes[0].ingredients.size() == 1 &&
+                      recipes[0].ingredients[0].name == "mushrooms",
+                  "export single re-import ingredient");
+            check(recipes[0].steps ==
+                      std::vector<std::string>{"Cook it."},
+                  "export single re-import steps");
+        }
+        // Field order, per the import format.
+        size_t title_at = text.find("\"title\"");
+        size_t desc_at = text.find("\"description\"");
+        size_t servings_at = text.find("\"servings\"");
+        size_t image_at = text.find("\"image_path\"");
+        size_t notes_at = text.find("\"notes\"");
+        size_t ingredients_at = text.find("\"ingredients\"");
+        size_t steps_at = text.find("\"steps\"");
+        check(title_at < desc_at && desc_at < servings_at &&
+                  servings_at < image_at && image_at < notes_at &&
+                  notes_at < ingredients_at && ingredients_at < steps_at,
+              "export single field order");
+
+        // Collection: a {"recipes": [...]} object that re-imports.
+        std::string collection =
+            export_collection({sample, sample});
+        check(collection.find("\"recipes\"") != std::string::npos,
+              "export collection is a recipes object");
+        check(parse_ok(collection, recipes),
+              "export collection re-imports");
+        check(recipes.size() == 2, "export collection re-import count");
+        check(recipes.size() == 2 &&
+                  recipes[0].title == "Mushroom Risotto" &&
+                  recipes[1].title == "Mushroom Risotto",
+              "export collection re-import titles");
+
+        // Empty collection: success with zero recipes.
+        check(parse_ok(export_collection({}), recipes),
+              "export empty collection re-imports");
+        check(recipes.empty(), "export empty collection count");
+        check(export_collection({}).find("\"recipes\": []") !=
+                  std::string::npos,
+              "export empty collection is an empty recipes array");
+
+        // image_path preserved when present.
+        ImportedRecipe with_image = sample;
+        with_image.image_path = "images/risotto.png";
+        std::string image_text = export_single(with_image);
+        check(image_text.find("images/risotto.png") !=
+                  std::string::npos,
+              "export keeps image_path text");
+        check(parse_ok(image_text, recipes),
+              "export with image_path re-imports");
+        check(!recipes.empty() &&
+                  recipes[0].image_path == "images/risotto.png",
+              "export with image_path re-import value");
+
+        // Escaping round-trip: quotes, backslashes, and control
+        // characters must survive the serializer and parser.
+        ImportedRecipe tricky;
+        tricky.title = "Fish \"Chips\" \\ \n\t\x01 end";
+        tricky.description = "Line one\nLine two";
+        std::string tricky_text = export_single(tricky);
+        check(parse_ok(tricky_text, recipes),
+              "export escaped text re-imports");
+        check(!recipes.empty() && recipes[0].title == tricky.title,
+              "export escaped title round-trips");
+        check(!recipes.empty() &&
+                  recipes[0].description == tricky.description,
+              "export escaped description round-trips");
+
+        // File-name sanitization.
+        check(default_file_name("Banana Bread") == "Banana Bread.json",
+              "default file name keeps a plain title");
+        check(default_file_name("Fish & Chips / Fries") ==
+                  "Fish _ Chips _ Fries.json",
+              "default file name sanitizes punctuation");
+        check(default_file_name("   ") == "recipe.json",
+              "default file name falls back for a blank title");
+        check(default_file_name("") == "recipe.json",
+              "default file name falls back for an empty title");
+        check(default_file_name("Cr\xC3\xA8me") == "Cr\xC3\xA8me.json",
+              "default file name keeps a non-ASCII letter");
+
+        // Write and overwrite.
+        std::string out_path = "/tmp/cpp-gtk4-export-test-" +
+                               std::to_string(getpid()) + "-out.json";
+        std::remove(out_path.c_str());
+        check(write_export(out_path, "{\"title\": \"Toast\"}", error),
+              "write_export writes");
+        {
+            std::ifstream in(out_path);
+            std::ostringstream contents;
+            contents << in.rdbuf();
+            check(contents.str() == "{\"title\": \"Toast\"}",
+                  "write_export content");
+        }
+        check(write_export(out_path, "replaced", error),
+              "write_export overwrites");
+        {
+            std::ifstream in(out_path);
+            std::ostringstream contents;
+            contents << in.rdbuf();
+            check(contents.str() == "replaced",
+                  "write_export overwritten content");
+        }
+        std::remove(out_path.c_str());
+
+        // Writing into a missing directory is an error.
+        std::string missing_dir = "/tmp/cpp-gtk4-export-test-" +
+                                  std::to_string(getpid()) +
+                                  "-no-such-dir/out.json";
+        check(!write_export(missing_dir, "x", error),
+              "write_export to a missing directory is an error");
+        check(error.find("Could not write file") != std::string::npos,
+              "write_export missing-directory error mentions writing");
     }
 
     if (failures == 0) {

@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "db.h"
+#include "json_export.h"
 #include "json_import.h"
 #include "images.h"
 #include "search.h"
@@ -46,6 +47,7 @@ struct App {
     GtkWidget* import_button = nullptr;
     GtkWidget* import_file_button = nullptr;
     GtkWidget* import_status_label = nullptr;
+    GtkWidget* export_status_label = nullptr;
     GtkWidget* import_spinner = nullptr;
     bool import_in_flight = false;
     GtkWidget* detail_box = nullptr;
@@ -192,6 +194,10 @@ void on_json_import_clicked(GtkButton* button, gpointer data);
 void on_json_import_file_clicked(GtkButton* button, gpointer data);
 void on_json_import_file_chosen(GObject* source, GAsyncResult* result,
                                gpointer data);
+void on_export_all_clicked(GtkButton* button, gpointer data);
+void on_export_recipe_clicked(GtkButton* button, gpointer data);
+void on_export_file_chosen(GObject* source, GAsyncResult* result,
+                          gpointer data);
 
 // --- Image loading (worker thread + main-thread idle callback) ---
 
@@ -433,14 +439,19 @@ void refresh_detail(App* app) {
     GtkWidget* buttons = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget* edit_button = gtk_button_new_with_label("Edit");
     GtkWidget* delete_button = gtk_button_new_with_label("Delete");
+    GtkWidget* export_button =
+        gtk_button_new_with_label("Export recipe…");
     GtkWidget* import_button = gtk_button_new_with_label("Import image…");
     g_signal_connect(edit_button, "clicked", G_CALLBACK(on_edit_clicked), app);
     g_signal_connect(delete_button, "clicked", G_CALLBACK(on_delete_clicked),
                      app);
+    g_signal_connect(export_button, "clicked",
+                     G_CALLBACK(on_export_recipe_clicked), app);
     g_signal_connect(import_button, "clicked", G_CALLBACK(on_import_clicked),
                      app);
     gtk_box_append(GTK_BOX(buttons), edit_button);
     gtk_box_append(GTK_BOX(buttons), delete_button);
+    gtk_box_append(GTK_BOX(buttons), export_button);
     gtk_box_append(GTK_BOX(buttons), import_button);
     gtk_box_append(GTK_BOX(app->detail_box), buttons);
 
@@ -947,8 +958,9 @@ struct ImportJob {
     bool ok = false;
 };
 
-void set_import_status(App* app, const std::string& text, bool error) {
-    if (app->import_status_label == nullptr) {
+void set_status_label(GtkWidget* label, const std::string& text,
+                      bool error) {
+    if (label == nullptr) {
         return;
     }
     if (error) {
@@ -956,12 +968,18 @@ void set_import_status(App* app, const std::string& text, bool error) {
         std::string markup =
             "<span foreground=\"red\">" + std::string(escaped) + "</span>";
         g_free(escaped);
-        gtk_label_set_markup(GTK_LABEL(app->import_status_label),
-                             markup.c_str());
+        gtk_label_set_markup(GTK_LABEL(label), markup.c_str());
     } else {
-        gtk_label_set_text(GTK_LABEL(app->import_status_label),
-                           text.c_str());
+        gtk_label_set_text(GTK_LABEL(label), text.c_str());
     }
+}
+
+void set_import_status(App* app, const std::string& text, bool error) {
+    set_status_label(app->import_status_label, text, error);
+}
+
+void set_export_status(App* app, const std::string& text, bool error) {
+    set_status_label(app->export_status_label, text, error);
 }
 
 gboolean on_import_finished(gpointer data) {
@@ -1152,6 +1170,137 @@ void on_json_import_file_clicked(GtkButton* /*button*/,
                          on_json_import_file_chosen, app);
 }
 
+// --- JSON export ---
+//
+// The mirror of the import above, following rust-egui's export:
+// "Export all…" writes all recipes as a {"recipes": [...]} collection,
+// "Export recipe…" writes the selected recipe as a bare object,
+// both pretty-printed by json_export.cpp in the import field
+// order, so either file re-imports unchanged. Both open a
+// GtkFileDialog in save mode (the same GtkFileDialog pattern
+// the import/image choosers use, with a JSON filter), so the
+// user chooses the file name and location; a cancelled dialog
+// returns no file and writes nothing, exactly as a cancelled
+// import chooser does. Serializing and writing happen in the
+// dialog callback, synchronously: the data is already in memory
+// and a recipe file is small, so there is no worker thread the
+// way import has one. The result is reported in the left pane's
+// export status label, in the same style as the import status
+// label (red for errors), including the chosen path on success.
+// The recipes to write are snapshotted into the job when the
+// button is clicked, so the callback writes what was showing
+// then, even if the selection changes while the dialog is up.
+
+ImportedRecipe imported_from_recipe(const Recipe& recipe) {
+    ImportedRecipe imported;
+    imported.title = recipe.title;
+    imported.description = recipe.description;
+    imported.servings = recipe.servings;
+    imported.image_path = recipe.image_path;
+    for (const Ingredient& ingredient : recipe.ingredients) {
+        imported.ingredients.push_back(ImportedIngredient{
+            ingredient.amount, ingredient.unit, ingredient.name});
+    }
+    imported.steps = recipe.steps;
+    imported.notes = recipe.notes;
+    return imported;
+}
+
+struct ExportJob {
+    App* app = nullptr;
+    std::vector<ImportedRecipe> recipes;
+    bool single = false;
+    std::string summary;  // "Exported …", without the path.
+};
+
+void finish_export(ExportJob* job, const std::string& path) {
+    App* app = job->app;
+    std::string text = job->single ? export_single(job->recipes.front())
+                                   : export_collection(job->recipes);
+    std::string error;
+    if (app->alive && write_export(path, text, error)) {
+        set_export_status(app, job->summary + " to " + path, false);
+    } else if (app->alive) {
+        set_export_status(app, error, true);
+    }
+}
+
+void on_export_file_chosen(GObject* source, GAsyncResult* result,
+                           gpointer data) {
+    ExportJob* job = static_cast<ExportJob*>(data);
+    App* app = job->app;
+    GtkFileDialog* dialog = GTK_FILE_DIALOG(source);
+    GError* error = nullptr;
+    GFile* file = gtk_file_dialog_save_finish(dialog, result, &error);
+    if (error != nullptr) {
+        g_error_free(error);
+    }
+    if (file == nullptr) {
+        // Cancelled, or no file chosen: write nothing, and
+        // leave the previous export status untouched.
+        g_object_unref(dialog);
+        delete job;
+        return;
+    }
+    char* path = g_file_get_path(file);
+    if (path != nullptr) {
+        finish_export(job, path);
+        g_free(path);
+    } else if (app->alive) {
+        set_export_status(app,
+                          "Could not determine the chosen file's path.",
+                          true);
+    }
+    g_object_unref(file);
+    g_object_unref(dialog);
+    delete job;
+}
+
+void open_export_dialog(App* app, ExportJob* job,
+                        const std::string& title,
+                        const std::string& initial_name) {
+    GtkFileDialog* dialog = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dialog, title.c_str());
+    GtkFileFilter* filter = gtk_file_filter_new();
+    gtk_file_filter_set_name(filter, "JSON files");
+    gtk_file_filter_add_mime_type(filter, "application/json");
+    gtk_file_filter_add_pattern(filter, "*.json");
+    gtk_file_dialog_set_default_filter(dialog, filter);
+    gtk_file_dialog_set_initial_name(dialog, initial_name.c_str());
+    gtk_file_dialog_save(dialog, GTK_WINDOW(app->window), nullptr,
+                         on_export_file_chosen, job);
+}
+
+void on_export_all_clicked(GtkButton* /*button*/, gpointer data) {
+    App* app = static_cast<App*>(data);
+    ExportJob* job = new ExportJob{};
+    job->app = app;
+    job->single = false;
+    for (const Recipe& recipe : app->recipes) {
+        job->recipes.push_back(imported_from_recipe(recipe));
+    }
+    job->summary = job->recipes.size() == 1
+        ? "Exported 1 recipe"
+        : "Exported " + std::to_string(job->recipes.size()) +
+              " recipes";
+    open_export_dialog(app, job, "Export recipes", "recipes.json");
+}
+
+void on_export_recipe_clicked(GtkButton* /*button*/, gpointer data) {
+    App* app = static_cast<App*>(data);
+    const Recipe* recipe = selected_recipe(app);
+    if (recipe == nullptr) {
+        return;
+    }
+    ExportJob* job = new ExportJob{};
+    job->app = app;
+    job->single = true;
+    job->recipes.push_back(imported_from_recipe(*recipe));
+    job->summary = "Exported \"" + recipe->title + "\"";
+    open_export_dialog(app, job, "Export recipe",
+                       default_file_name(recipe->title));
+}
+
 }  // namespace
 
 // --- Application setup ---
@@ -1231,6 +1380,17 @@ void on_activate(GtkApplication* gtk_app, gpointer /*data*/) {
     gtk_box_append(GTK_BOX(left), import_row);
     app.import_status_label = make_label("", true);
     gtk_box_append(GTK_BOX(left), app.import_status_label);
+
+    // JSON export: "Export all…" writes every recipe as a
+    // collection, with its own status label below it, in the
+    // same style as the import status label above.
+    GtkWidget* export_all_button =
+        gtk_button_new_with_label("Export all…");
+    g_signal_connect(export_all_button, "clicked",
+                     G_CALLBACK(on_export_all_clicked), &app);
+    gtk_box_append(GTK_BOX(left), export_all_button);
+    app.export_status_label = make_label("", true);
+    gtk_box_append(GTK_BOX(left), app.export_status_label);
 
     app.list_box = gtk_list_box_new();
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(app.list_box),

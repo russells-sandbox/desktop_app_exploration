@@ -28,14 +28,19 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // Unit tests: recipe data (db.zig), search
-    // (search.zig), and network JSON import
+    // (search.zig), network JSON import
     // (json_import.zig: parsing, URL handling, chunked
     // bodies, fetching from a local one-shot server, and
-    // inserting into a throwaway database) — no encoding,
-    // UI, or end-to-end tests. No test module imports
-    // DVUI; the db and json_import tests link the system
-    // SQLite library like the app does (json_import
-    // imports db.zig for its Recipe type).
+    // inserting into a throwaway database), and JSON
+    // export (json_export.zig: single/collection
+    // serialization, re-import round-trips, file-name
+    // sanitizing, and file writes) — no encoding, UI, or
+    // end-to-end tests. No test module imports DVUI; the
+    // db, json_import, and json_export tests link the
+    // system SQLite library like the app does
+    // (json_import and json_export import db.zig for its
+    // Recipe type, and json_export imports json_import
+    // for its re-import round-trip tests).
     const search_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/search.zig"),
@@ -65,8 +70,19 @@ pub fn build(b: *std.Build) void {
     json_import_tests.root_module.linkSystemLibrary("sqlite3", .{});
     const run_json_import_tests = b.addRunArtifact(json_import_tests);
 
+    const json_export_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/json_export.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    json_export_tests.root_module.linkSystemLibrary("sqlite3", .{});
+    const run_json_export_tests = b.addRunArtifact(json_export_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_search_tests.step);
     test_step.dependOn(&run_db_tests.step);
     test_step.dependOn(&run_json_import_tests.step);
+    test_step.dependOn(&run_json_export_tests.step);
 }

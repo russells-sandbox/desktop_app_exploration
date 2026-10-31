@@ -16,7 +16,10 @@
 // worker thread, spinner while in flight, success/error message
 // in the list pane), and raw-file JSON import (a file picker
 // for a .json file, read and parse on a worker thread through
-// the same import path as the URL import).
+// the same import path as the URL import), and JSON export
+// (a save-style file picker that chooses the file name and
+// location, for all recipes as a collection or for the selected
+// recipe alone, with a status message in the list pane).
 //
 // Notes on the Dear ImGui default font: it does not render the
 // bullet character, so ingredients use BulletText (which draws a
@@ -38,6 +41,7 @@
 
 #include "db.h"
 #include "filepicker.h"
+#include "json_export.h"
 #include "json_import.h"
 #include "search.h"
 #include "images.h"
@@ -250,6 +254,19 @@ int main(int, char**) {
     // is opened from the main window below.
     FilePicker import_picker;
     bool open_import_picker = false;
+    // Export state, mirroring the import messages: the last
+    // finished export's status, shown in the list pane. The
+    // picker below is save-mode (see filepicker.h), so it
+    // chooses the file name and location; export_kind says
+    // which button opened it, and export_default_name is the
+    // name offered in the picker for that button.
+    enum class ExportKind { None, All, Single };
+    std::string export_message;
+    std::string export_error;
+    FilePicker export_picker;
+    bool open_export_picker = false;
+    ExportKind export_kind = ExportKind::None;
+    std::string export_default_name;
 
     // List/detail transition state: which recipe the current fade
     // is for, and the time it started at. Dear ImGui has no
@@ -437,6 +454,32 @@ int main(int, char**) {
         if (!import_error.empty()) {
             ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
                                import_error.c_str());
+        }
+        // Export all, as in rust-egui: the save picker chooses
+        // the file name and location (default "recipes.json"),
+        // and the write happens when the picker confirms below.
+        // Disabled while editing, like the import buttons: an
+        // export must not race an in-progress edit.
+        {
+            bool export_disabled = editing;
+            if (export_disabled) {
+                ImGui::BeginDisabled();
+            }
+            if (ImGui::Button("Export all...")) {
+                export_kind = ExportKind::All;
+                export_default_name = "recipes.json";
+                open_export_picker = true;
+            }
+            if (export_disabled) {
+                ImGui::EndDisabled();
+            }
+        }
+        if (!export_message.empty()) {
+            ImGui::Text("%s", export_message.c_str());
+        }
+        if (!export_error.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
+                               export_error.c_str());
         }
         ImGui::Separator();
         for (const Recipe& recipe : recipes) {
@@ -674,6 +717,16 @@ int main(int, char**) {
                 if (ImGui::Button("Delete")) {
                     confirming_delete = true;
                 }
+                ImGui::SameLine();
+                // Export this one recipe, as in rust-egui: the
+                // save picker offers the recipe title as the
+                // default file name, and the user chooses the
+                // name and location there.
+                if (ImGui::Button("Export recipe...")) {
+                    export_kind = ExportKind::Single;
+                    export_default_name = default_file_name(recipe.title);
+                    open_export_picker = true;
+                }
                 if (!detail_error.empty()) {
                     ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s",
                                        detail_error.c_str());
@@ -785,6 +838,55 @@ int main(int, char**) {
                     job->recipes = std::move(recipes);
                     job->error = std::move(error);
                 }).detach();
+            }
+        }
+
+        // Export picker, same main-window rule as the pickers
+        // above. On confirmation the chosen file is written
+        // synchronously: serializing and writing a recipe file
+        // is small, so (unlike import) there is no worker
+        // thread here, as in rust-egui. A cancelled picker
+        // confirms nothing, so nothing is written and the
+        // kind is simply cleared.
+        if (open_export_picker) {
+            export_picker.open_save(export_default_name);
+            open_export_picker = false;
+        }
+        if (export_picker.is_open()) {
+            if (export_picker.draw()) {
+                std::string path = export_picker.selected();
+                export_message.clear();
+                export_error.clear();
+                if (export_kind == ExportKind::All) {
+                    std::string text = export_collection(recipes);
+                    std::string error;
+                    if (!write_export(path, text, error)) {
+                        export_error = error;
+                    } else {
+                        export_message = "Exported " +
+                                         std::to_string(recipes.size()) +
+                                         (recipes.size() == 1 ? " recipe" : " recipes") +
+                                         " to " + path + ".";
+                    }
+                } else if (export_kind == ExportKind::Single) {
+                    int export_index = find_recipe_index(recipes, selected_id);
+                    if (export_index < 0) {
+                        export_error = "No recipe selected to export.";
+                    } else {
+                        const Recipe& exported = recipes[export_index];
+                        std::string text = export_single(exported);
+                        std::string error;
+                        if (!write_export(path, text, error)) {
+                            export_error = error;
+                        } else {
+                            export_message = "Exported \"" + exported.title +
+                                             "\" to " + path + ".";
+                        }
+                    }
+                }
+            }
+            if (!export_picker.is_open()) {
+                export_kind = ExportKind::None;
             }
         }
 

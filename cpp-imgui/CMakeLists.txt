@@ -44,6 +44,7 @@ add_executable(cpp-imgui
     main.cpp
     db.cpp
     images.cpp
+    json_export.cpp
     json_import.cpp
     ${imgui_SOURCE_DIR}/imgui.cpp
     ${imgui_SOURCE_DIR}/imgui_draw.cpp
@@ -94,3 +95,12 @@ add_executable(cpp-imgui-json-import-db-tests tests/test_json_import_db.cpp json
 target_include_directories(cpp-imgui-json-import-db-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(cpp-imgui-json-import-db-tests PRIVATE SQLite3::SQLite3 Threads::Threads)
 add_test(NAME cpp-imgui-json-import-db-tests COMMAND cpp-imgui-json-import-db-tests)
+
+# JSON export tests: same shape as the import tests — the
+# stack's own json_export.cpp, re-imported through its own
+# json_import.cpp. Needs the SQLite header (for the Recipe
+# struct in db.h) but links no SQLite symbols.
+add_executable(cpp-imgui-json-export-tests tests/test_json_export.cpp json_export.cpp json_import.cpp)
+target_include_directories(cpp-imgui-json-export-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${SQLite3_INCLUDE_DIRS})
+target_link_libraries(cpp-imgui-json-export-tests PRIVATE Threads::Threads)
+add_test(NAME cpp-imgui-json-export-tests COMMAND cpp-imgui-json-export-tests)

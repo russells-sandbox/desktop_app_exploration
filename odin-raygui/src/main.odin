@@ -88,6 +88,26 @@ import_job: ^Import_Job
 import_message: string
 import_error: string
 
+// ---- JSON export ----
+
+// raylib has no file picker dialog, so like the raw-file
+// import above, export paths come from typed text fields:
+// one in the left pane for the collection (defaulting to
+// recipes.json) and one in the detail pane for the single
+// recipe (defaulting to a sanitized title file name, set
+// once per selected recipe — see detail_block). Both
+// exports write synchronously on the UI thread (the data
+// is already in memory and the file is small, like the
+// Rust version) and report through the same left-pane
+// status display as the import messages.
+export_file_buf: [512]byte
+export_file_edit: bool
+export_single_buf: [512]byte
+export_single_edit: bool
+export_single_for: i64 = -1
+export_message: string
+export_error: string
+
 Import_Job :: struct {
 	url:       string,
 	from_file: bool,
@@ -496,6 +516,59 @@ import_poll :: proc() {
 	import_error = ""
 }
 
+// ---- JSON export: synchronous writes ----
+
+// Finish an export: write the already-serialized text and
+// report the result in the left pane, including the path
+// the user typed, since that is the point of the field.
+// Messages are heap-cloned (not temp strings), because
+// main frees the temp allocator at the end of every
+// frame and the message must survive to the next one.
+complete_export :: proc(path: string, text: string, summary: string) {
+	export_message = ""
+	export_error = ""
+	if err := write_export(path, text); err != "" {
+		export_error = err
+		return
+	}
+	export_message = strings.clone(fmt.tprintf("%s to %s.", summary, path))
+}
+
+// Export all recipes as a collection to the path in the
+// left-pane export field. An empty path is an error, in
+// the same style as the image import's empty-path guard
+// in the edit form, rather than a write to "".
+do_export_all :: proc() {
+	path := strings.trim_space(buf_str(export_file_buf[:]))
+	if path == "" {
+		export_message = ""
+		export_error = "Enter a file path to export to."
+		return
+	}
+	total := len(recipes)
+	summary := fmt.tprintf("Exported %d recipes", total)
+	if total == 1 {
+		summary = "Exported 1 recipe"
+	}
+	// summary is a temp string, but complete_export
+	// clones the message it builds from it immediately.
+	complete_export(path, export_collection(recipes), summary)
+}
+
+// Export one recipe as a bare object to the path in the
+// detail-pane export field. Same empty-path guard as
+// do_export_all.
+do_export_single :: proc(recipe: Recipe) {
+	path := strings.trim_space(buf_str(export_single_buf[:]))
+	if path == "" {
+		export_message = ""
+		export_error = "Enter a file path to export to."
+		return
+	}
+	summary := fmt.tprintf("Exported \"%s\"", recipe.title)
+	complete_export(path, export_single(recipe), summary)
+}
+
 // Fit a texture inside a box, preserving its aspect ratio
 // (like the Rust version's fit_to_exact_size), and return
 // the destination rectangle within the box.
@@ -593,6 +666,29 @@ detail_block :: proc(draw: bool, ox, oy, width: f32, recipe: ^Recipe, alpha, y_s
 		}
 		y += 68
 	}
+
+	// Export this one recipe: a typed path field (no file
+	// dialog, same pattern as the left-pane export) plus a
+	// button, below the Edit/Delete row. The field defaults
+	// to a sanitized title file name, set once per selected
+	// recipe and only in the draw pass, so typing in it is
+	// never overwritten by the measure pass or by a later
+	// frame for the same recipe — unless the field is
+	// currently being edited, in which case even a
+	// selection change does not clobber it. The result
+	// shows in the left pane, with the import messages.
+	if draw {
+		draw_text(ox, y, FONT_BODY, dark, "Export recipe:")
+		if export_single_for != recipe.id && active_field != &export_single_edit {
+			set_buf(export_single_buf[:], default_file_name(recipe.title))
+			export_single_for = recipe.id
+		}
+		text_field({ox, y + 22, width - 160, 30}, export_single_buf[:], &export_single_edit)
+		if rl.GuiButton({ox + width - 150, y + 22, 150, 30}, "Export recipe...") {
+			do_export_single(recipe^)
+		}
+	}
+	y += 62
 
 	if draw {
 		draw_text(ox, y, FONT_BODY, black, "Ingredients")
@@ -807,6 +903,9 @@ main :: proc() {
 
 	// Default import URL, like the Rust version's.
 	set_buf(import_url_buf[:], "http://localhost:8000/recipes.json")
+	// Default collection export path, like the Rust
+	// version's save-dialog default file name.
+	set_buf(export_file_buf[:], "recipes.json")
 
 	for !rl.WindowShouldClose() {
 		image_poll()
@@ -858,13 +957,40 @@ main :: proc() {
 				start_file_import()
 			}
 		}
-		status_y: f32 = 306
+
+		// Export all, like the file import above but in
+		// reverse: a typed path field (raylib has no file
+		// dialog) and a button that writes the collection
+		// to that path synchronously. The button is shown
+		// only when not editing, like the import buttons.
+		// The label and button use three ASCII dots, not
+		// an ellipsis, for the same default-font reason as
+		// "Import from file...".
+		rl.GuiLabel({20, 306, 260, 20}, "Export to file:")
+		text_field({20, 328, 260, 30}, export_file_buf[:], &export_file_edit)
+		if mode != .Editing {
+			if rl.GuiButton({20, 366, 260, 30}, "Export all...") {
+				do_export_all()
+			}
+		}
+		status_y: f32 = 404
 		if import_message != "" {
 			draw_text(20, status_y, FONT_BODY, rl.DARKGRAY, import_message)
 			status_y += f32(FONT_BODY + LINE_GAP)
 		}
 		if import_error != "" {
 			status_y = draw_wrapped(20, status_y, 260, FONT_BODY, rl.RED, import_error)
+		}
+		if export_message != "" {
+			// Wrapped, not a single draw_text line: the
+			// message includes the path the user typed,
+			// which is longer than the 260px pane, and an
+			// unwrapped line was cut off by the detail
+			// panel drawn after the left pane.
+			status_y = draw_wrapped(20, status_y, 260, FONT_BODY, rl.DARKGRAY, export_message)
+		}
+		if export_error != "" {
+			status_y = draw_wrapped(20, status_y, 260, FONT_BODY, rl.RED, export_error)
 		}
 		list_top := status_y + 8
 

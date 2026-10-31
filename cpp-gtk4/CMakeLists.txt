@@ -16,6 +16,7 @@ add_executable(cpp-gtk4
     seed.cpp
     images.cpp
     json_import.cpp
+    json_export.cpp
 )
 
 target_include_directories(cpp-gtk4 PRIVATE
@@ -42,9 +43,9 @@ target_link_libraries(cpp-gtk4 PRIVATE
 # dependencies. test-search links nothing but the search header
 # (no GTK, no SQLite), so it also builds with plain g++:
 #   g++ -std=c++17 -Wall -Wextra test_search.cpp -o /tmp/test_search
-# test-json-import links only the dependency-free importer (no
-# GTK, no SQLite), so it also builds with plain g++:
-#   g++ -std=c++17 -Wall -Wextra -pthread test_json_import.cpp json_import.cpp -o /tmp/test_json_import
+# test-json-import links only the dependency-free importer and
+# exporter (no GTK, no SQLite), so it also builds with plain g++:
+#   g++ -std=c++17 -Wall -Wextra -pthread test_json_import.cpp json_import.cpp json_export.cpp -o /tmp/test_json_import
 # test-db uses the stack's own DB layer against a throwaway
 # database under /tmp; it never opens the real recipes.db.
 add_executable(cpp-gtk4-test-search
@@ -54,6 +55,7 @@ add_executable(cpp-gtk4-test-search
 add_executable(cpp-gtk4-test-json-import
     test_json_import.cpp
     json_import.cpp
+    json_export.cpp
 )
 
 add_executable(cpp-gtk4-test-db

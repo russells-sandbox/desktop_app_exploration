@@ -1,5 +1,6 @@
 mod db;
 mod images;
+mod json_export;
 mod json_import;
 mod search;
 mod seed;
@@ -134,6 +135,8 @@ enum Message {
     ImportUrlChanged(String),
     ImportClicked,
     ImportFileClicked,
+    ExportAllClicked,
+    ExportRecipeClicked,
     AddIngredientClicked,
     RemoveIngredientClicked(usize),
     AddStepClicked,
@@ -189,6 +192,12 @@ struct RecipeManager {
     pending_import: Option<Receiver<Result<Vec<Recipe>, String>>>,
     import_message: Option<String>,
     import_error: Option<String>,
+    // Last export result, shown in the left pane like the import
+    // messages. Export writes are synchronous (see
+    // complete_export), so there is no in-flight state to poll
+    // for, unlike import.
+    export_message: Option<String>,
+    export_error: Option<String>,
 }
 
 impl RecipeManager {
@@ -217,6 +226,8 @@ impl RecipeManager {
             pending_import: None,
             import_message: None,
             import_error: None,
+            export_message: None,
+            export_error: None,
         };
         // The first recipe shown at startup animates in, like a
         // selection change does.
@@ -357,6 +368,34 @@ impl RecipeManager {
             Err(err) => {
                 self.import_error = Some(err);
                 self.import_message = None;
+            }
+        }
+    }
+
+    // Finish an export the user started from a save dialog:
+    // write the serialized text to the chosen path and report
+    // the result in the left pane, including the path the user
+    // chose, since that is the point of the dialog.
+    fn complete_export(
+        &mut self,
+        path: std::path::PathBuf,
+        text: Result<String, String>,
+        summary: String,
+    ) {
+        self.export_message = None;
+        self.export_error = None;
+        match text {
+            Ok(text) => match json_export::write_export(&path, &text) {
+                Ok(()) => {
+                    self.export_message =
+                        Some(format!("{} to {}.", summary, path.display()));
+                }
+                Err(err) => {
+                    self.export_error = Some(err);
+                }
+            },
+            Err(err) => {
+                self.export_error = Some(err);
             }
         }
     }
@@ -609,6 +648,54 @@ impl RecipeManager {
                     }
                 }
             }
+            Message::ExportAllClicked => {
+                // Export all: the OS save dialog is the same rfd
+                // pattern as the file pickers above, except it lets
+                // the user choose the file name and location instead
+                // of picking an existing file. A cancelled dialog
+                // returns None and writes nothing. Unlike import,
+                // serializing and writing are synchronous here: the
+                // data is already in memory and the file is small.
+                if !self.editing() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("JSON", &["json"])
+                        .set_file_name("recipes.json")
+                        .save_file()
+                    {
+                        let total = self.recipes.len();
+                        let summary = if total == 1 {
+                            "Exported 1 recipe".to_string()
+                        } else {
+                            format!("Exported {} recipes", total)
+                        };
+                        let text = json_export::export_collection(&self.recipes);
+                        self.complete_export(path, text, summary);
+                    }
+                }
+            }
+            Message::ExportRecipeClicked => {
+                // Export this one recipe: same rfd save dialog as
+                // "Export all…", with the recipe title as the
+                // default file name, so the user chooses both name
+                // and location.
+                if let Some(recipe) = self.selected_recipe().cloned() {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("JSON", &["json"])
+                        .set_file_name(json_export::default_file_name(
+                            &recipe.title,
+                        ))
+                        .save_file()
+                    {
+                        let summary = format!("Exported \"{}\"", recipe.title);
+                        let text = json_export::export_single(&recipe);
+                        self.complete_export(path, text, summary);
+                    }
+                } else {
+                    self.export_message = None;
+                    self.export_error =
+                        Some("No recipe selected to export.".to_string());
+                }
+            }
             Message::Tick => {
                 self.spinner_frame = self.spinner_frame.wrapping_add(1);
                 self.poll_image_loads();
@@ -689,6 +776,26 @@ impl RecipeManager {
             list = list.push(text(message.as_str()));
         }
         if let Some(error) = &self.import_error {
+            list = list.push(text(error.as_str()).color(Color {
+                r: 0.8,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0,
+            }));
+        }
+        // Export all, below the import messages and above the
+        // list: the single-recipe button lives in the detail pane
+        // next to Edit/Delete. Both export messages use the same
+        // style and place as the import messages above.
+        list = list.push(button("Export all…").on_press_maybe(if editing {
+            None
+        } else {
+            Some(Message::ExportAllClicked)
+        }));
+        if let Some(message) = &self.export_message {
+            list = list.push(text(message.as_str()));
+        }
+        if let Some(error) = &self.export_error {
             list = list.push(text(error.as_str()).color(Color {
                 r: 0.8,
                 g: 0.0,
@@ -845,6 +952,7 @@ impl RecipeManager {
             row![
                 button("Edit").on_press(Message::EditClicked),
                 button("Delete").on_press(Message::DeleteClicked),
+                button("Export recipe…").on_press(Message::ExportRecipeClicked),
             ]
             .spacing(8.0),
         ]
@@ -1088,6 +1196,8 @@ mod tests {
             pending_import: Some(receiver),
             import_message: None,
             import_error: None,
+            export_message: None,
+            export_error: None,
         }
     }
 

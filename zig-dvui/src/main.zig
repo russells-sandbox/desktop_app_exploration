@@ -5,6 +5,7 @@ const search = @import("search.zig");
 const images = @import("images.zig");
 const imageloader = @import("imageloader.zig");
 const json_import = @import("json_import.zig");
+const json_export = @import("json_export.zig");
 
 // Recipe manager test app.
 // Recipes load from SQLite (db.zig) in the current working
@@ -20,6 +21,15 @@ const json_import = @import("json_import.zig");
 // path field and "Import from file…" button beside the
 // URL Import button (DVUI has no native file picker, so
 // the path is typed in, as in the image-import row).
+// JSON export (json_export.zig) follows the same
+// no-picker pattern: a typed path field plus an
+// "Export all" button in the left pane (default
+// "recipes.json", collection shape) and a typed path
+// field plus an "Export recipe" button in the detail
+// pane (default: the selected recipe's title as a file
+// name, single-recipe shape). Exporting is synchronous
+// — the data is already in memory — and reports its
+// result in the left pane, like the import messages.
 //
 // Layout, like the Rust version:
 //   - left pane: "Recipes", a title search box, an "Add
@@ -171,6 +181,86 @@ var import_message: ?[]const u8 = null;
 var import_message_buf: [512]u8 = undefined;
 var import_error: ?[]const u8 = null;
 var import_error_buf: [512]u8 = undefined;
+
+// Export state (left pane + detail pane). The path
+// buffers are typed in by the user, as in the import
+// rows (DVUI has no native file picker); the "all"
+// buffer is filled with "recipes.json" on the first
+// frame, and the single-recipe buffer is refilled with
+// the selected recipe's default file name whenever the
+// selection changes (see the detail pane). Message and
+// error buffers are 2048 bytes, not 512 like import's,
+// because an export message names the full path the
+// user typed, and a path buffer is 1024 bytes.
+var export_all_buffer: [1024]u8 = @splat(0);
+var export_all_set: bool = false;
+var export_single_buffer: [1024]u8 = @splat(0);
+var export_single_id: i64 = 0;
+var export_message: ?[]const u8 = null;
+var export_message_buf: [2048]u8 = undefined;
+var export_error: ?[]const u8 = null;
+var export_error_buf: [2048]u8 = undefined;
+
+// One Threaded Io for the app's lifetime, created on
+// first use from the main thread (export runs on a UI
+// button click), never deinitialized — the same pattern
+// images.zig uses for image import.
+var export_io_threaded: ?std.Io.Threaded = null;
+
+fn exportIo() std.Io {
+    if (export_io_threaded == null) {
+        export_io_threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+    }
+    return export_io_threaded.?.io();
+}
+
+/// Serialize all recipes as a collection and write them
+/// to `path`, reporting the result (including the path)
+/// in the left pane, like the import messages. Runs
+/// synchronously: the data is already in memory, and
+/// writing a recipe file is small.
+fn doExportAll(path: []const u8) void {
+    export_message = null;
+    export_error = null;
+    const page = std.heap.page_allocator;
+    const text = json_export.exportCollection(page, db.recipes) catch {
+        export_error = std.fmt.bufPrint(&export_error_buf, "Could not serialize recipe JSON.", .{}) catch "Export failed.";
+        return;
+    };
+    defer page.free(text);
+    json_export.writeExport(exportIo(), path, text) catch |err| {
+        const msg = json_export.formatWriteError(page, path, err) catch "Could not write export file.";
+        export_error = std.fmt.bufPrint(&export_error_buf, "{s}", .{msg}) catch "Could not write export file.";
+        page.free(msg);
+        return;
+    };
+    const count = db.recipes.len;
+    export_message = std.fmt.bufPrint(&export_message_buf, "Exported {d} recipe{s} to {s}.", .{
+        count,
+        if (count == 1) "" else "s",
+        path,
+    }) catch "Exported recipes.";
+}
+
+/// Serialize one recipe as a bare object and write it to
+/// `path`, reporting the result like doExportAll does.
+fn doExportSingle(recipe: db.Recipe, path: []const u8) void {
+    export_message = null;
+    export_error = null;
+    const page = std.heap.page_allocator;
+    const text = json_export.exportSingle(page, recipe) catch {
+        export_error = std.fmt.bufPrint(&export_error_buf, "Could not serialize recipe JSON.", .{}) catch "Export failed.";
+        return;
+    };
+    defer page.free(text);
+    json_export.writeExport(exportIo(), path, text) catch |err| {
+        const msg = json_export.formatWriteError(page, path, err) catch "Could not write export file.";
+        export_error = std.fmt.bufPrint(&export_error_buf, "{s}", .{msg}) catch "Could not write export file.";
+        page.free(msg);
+        return;
+    };
+    export_message = std.fmt.bufPrint(&export_message_buf, "Exported \"{s}\" to {s}.", .{ recipe.title, path }) catch "Exported recipe.";
+}
 
 // The add/edit draft. DVUI text entries read fixed buffers
 // (up to the first zero byte) every frame, so the draft lives
@@ -446,6 +536,44 @@ pub fn appFrame() !dvui.App.Result {
             dvui.label(@src(), "{s}", .{err}, .{});
         }
 
+        // JSON export (json_export.zig): a path field plus
+        // an "Export all" button, the same no-picker
+        // pattern as the import rows above. The field
+        // defaults to "recipes.json", as in rust-egui's
+        // save dialog, and the button writes all recipes
+        // as a {"recipes": [...]} collection to the typed
+        // path. A cleared field is an error in the same
+        // style as the import's empty-path error, not a
+        // silent no-op. The result — including the path
+        // written — shows below, where the import messages
+        // show, and is also where a detail-pane export
+        // reports, so there is one export status place.
+        dvui.label(@src(), "Export all:", .{}, .{});
+        if (!export_all_set) {
+            fillBuf(&export_all_buffer, "recipes.json");
+            export_all_set = true;
+        }
+        var export_all_entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &export_all_buffer } }, .{ .expand = .horizontal });
+        const export_all_text = export_all_entry.textGet();
+        export_all_entry.deinit();
+        if (!editing) {
+            if (dvui.button(@src(), "Export all", .{}, .{ .expand = .horizontal })) {
+                const path = std.mem.trim(u8, export_all_text, " \t\r\n");
+                if (path.len == 0) {
+                    export_message = null;
+                    export_error = std.fmt.bufPrint(&export_error_buf, "Enter a file path to export.", .{}) catch "Export failed.";
+                } else {
+                    doExportAll(path);
+                }
+            }
+        }
+        if (export_message) |msg| {
+            dvui.label(@src(), "{s}", .{msg}, .{});
+        }
+        if (export_error) |err| {
+            dvui.label(@src(), "{s}", .{err}, .{});
+        }
+
         _ = dvui.separator(@src(), .{ .expand = .horizontal });
 
         var scroll = dvui.scrollArea(@src(), .{}, .{ .expand = .both });
@@ -585,6 +713,43 @@ pub fn appFrame() !dvui.App.Result {
             }
             if (dvui.button(@src(), "Delete", .{}, .{})) {
                 confirming_delete = true;
+            }
+        }
+
+        // Export this one recipe (json_export.zig): a path
+        // field plus an "Export recipe" button, the same
+        // no-picker pattern as "Export all" above. The
+        // field defaults to the selected recipe's title
+        // as a file name, refilled whenever the selection
+        // changes, so typing over it is what chooses a
+        // different name or location; the button writes
+        // the selected recipe as a bare JSON object. The
+        // result reports in the left pane, like "Export
+        // all", so it shows on the next frame (the left
+        // pane is drawn before this one). A cleared field
+        // is an error, in the same style as the import's
+        // empty-path error.
+        dvui.label(@src(), "Export recipe to file:", .{}, .{});
+        if (export_single_id != recipe.id) {
+            const name = json_export.defaultFileNameInto(&export_single_buffer, recipe.title);
+            // defaultFileNameInto reserves a terminator
+            // byte (see json_export.zig), so this write
+            // always fits; it makes the text entry stop
+            // at the end of the name instead of reading
+            // stale bytes from a longer previous name.
+            export_single_buffer[name.len] = 0;
+            export_single_id = recipe.id;
+        }
+        var export_single_entry = dvui.textEntry(@src(), .{ .text = .{ .buffer = &export_single_buffer } }, .{ .expand = .horizontal });
+        const export_single_text = export_single_entry.textGet();
+        export_single_entry.deinit();
+        if (dvui.button(@src(), "Export recipe", .{}, .{})) {
+            const path = std.mem.trim(u8, export_single_text, " \t\r\n");
+            if (path.len == 0) {
+                export_message = null;
+                export_error = std.fmt.bufPrint(&export_error_buf, "Enter a file path to export.", .{}) catch "Export failed.";
+            } else {
+                doExportSingle(recipe, path);
             }
         }
         if (confirming_delete) {
